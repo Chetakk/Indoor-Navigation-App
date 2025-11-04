@@ -1,0 +1,436 @@
+:PROPERTIES:
+:ID:       20251015130000-yolo_architecture_fundamentals
+:ROAM_ALIASES: "YOLO" "You Only Look Once"
+:END:
+#+title: YOLO Architecture Fundamentals
+#+filetags: :yolo:architecture:object_detection:deep_learning:
+
+* Core Concept
+
+YOLO (You Only Look Once) is a single-stage object detection architecture that frames detection as a regression problem rather than classification.
+
+Key Innovation: Process entire image in one forward pass through the network, predicting bounding boxes and class probabilities simultaneously.
+
+* Architectural Philosophy
+
+** Single-Stage Detection
+- Traditional methods use region proposals (R-CNN, Fast R-CNN)
+- YOLO eliminates proposal generation stage
+- Direct prediction from image pixels to bounding box coordinates and class probabilities
+
+** Unified Architecture
+All components integrated into single neural network:
+1. Feature extraction (backbone)
+2. Feature aggregation (neck)
+3. Detection head (predictions)
+
+* Core Components
+
+** 1. Backbone Network
+- Extracts hierarchical features from input image
+- Based on CNN architectures (Darknet, CSPDarknet, etc.)
+- Multiple scales: low-level (edges) to high-level (semantic features)
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+*YOLOv8 Backbone:*
+- CSPDarknet with C2f modules (improved from YOLOv5's C3)
+- Outputs multi-scale features: P3 (1/8), P4 (1/16), P5 (1/32)
+- Better gradient flow through split-concatenate design
+- 5 scaled variants (n/s/m/l/x) from 3.2M to 68M parameters
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]] for complete YOLOv8 backbone details
+
+** 2. Neck (Feature Aggregation)
+- Combines features from different scales
+- Techniques: Feature Pyramid Network (FPN), Path Aggregation Network (PAN)
+- Enables multi-scale detection
+- See [[id:20251015130800-feature_pyramid_networks][Feature Pyramid Networks]]
+
+*YOLOv8 Neck:*
+- PAN-FPN hybrid with C2f modules throughout
+- SPPF (Spatial Pyramid Pooling - Fast) for multi-scale context
+- FPN top-down pathway: P5 -> P4 -> P3
+- PAN bottom-up pathway: P3 -> P4 -> P5
+- Channel-wise concatenation (not addition) preserves information
+- See [[id:20251015130900-feature_pyramid_networks][Feature Pyramid Networks]] for detailed YOLOv8 neck architecture
+
+** 3. Detection Head
+- Final layer that outputs predictions
+- For each grid cell, predicts:
+  - Bounding box coordinates (x, y, w, h)
+  - Objectness score (confidence)
+  - Class probabilities
+- See [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+
+*YOLOv8 Head:*
+- Decoupled head design (separate regression and classification branches)
+- Anchor-free detection (direct center point prediction)
+- Three detection scales: 80x80 (small), 40x40 (medium), 20x20 (large)
+- Task-aligned assigner for training
+- Distribution Focal Loss for bounding box regression
+
+* Input Processing
+
+** Image Division
+Input image divided into S x S grid (e.g., 13x13, 26x26, 52x52)
+
+** Responsibility Assignment
+Each grid cell responsible for detecting objects whose center falls within that cell
+
+** Multi-Scale Predictions
+Modern YOLO versions predict at multiple scales:
+- Large grid (52x52): Small objects
+- Medium grid (26x26): Medium objects
+- Small grid (13x13): Large objects
+
+* Output Structure
+
+** Prediction Tensor
+Shape: [batch_size, S, S, B*(5+C)]
+- S: Grid size
+- B: Number of anchor boxes per cell
+- 5: (x, y, w, h, confidence)
+- C: Number of classes
+
+** Coordinate Encoding
+- x, y: Offsets relative to grid cell (0-1)
+- w, h: Relative to anchor box dimensions
+- All normalized to image size
+
+** Confidence Score
+Pr(Object) * IOU(pred, truth)
+- Represents both objectness and localization quality
+- See [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+
+* Prediction Pipeline
+
+1. Forward pass through network
+2. Generate predictions for all grid cells
+3. Apply confidence threshold (filter low-confidence predictions)
+4. Apply Non-Maximum Suppression (remove duplicate detections)
+5. Output final detections
+
+See [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Key Advantages
+
+** Speed
+- Single forward pass (no region proposals)
+- Real-time performance (30+ FPS on modern hardware)
+- Suitable for embedded systems and mobile devices
+
+** Global Context
+- Sees entire image during training and inference
+- Reduces background false positives
+- Better contextual understanding than sliding window approaches
+
+** End-to-End Training
+- All components trained jointly
+- Optimized for final detection task
+- Single loss function
+
+* Limitations
+
+** Small Object Detection
+- Grid-based approach struggles with very small objects
+- Multiple small objects in same cell challenging
+- Partially addressed with multi-scale predictions
+
+** Spatial Constraints
+- Each grid cell limited to fixed number of predictions
+- Struggles with dense object clusters
+- Groups of small objects problematic
+
+** Localization Accuracy
+- Trade-off between speed and precision
+- Bounding box predictions less precise than two-stage detectors
+- Improved in later versions with better loss functions
+
+* YOLOv8 Complete Architecture (Our Project)[fn:3]
+
+** Overview
+
+YOLOv8 represents the latest evolution of the YOLO family with significant improvements in accuracy, speed, and ease of use.
+
+** Complete Pipeline
+
+#+BEGIN_EXAMPLE
+Input Image (640x640x3)
+        |
+        v
+  [BACKBONE: CSPDarknet with C2f]
+        |
+        +---> P3 (80x80x128)   - Stage 2 output
+        +---> P4 (40x40x256)   - Stage 3 output
+        +---> P5 (20x20x512)   - Stage 4 output
+        |
+        v
+  [NECK: PAN-FPN with SPPF]
+        |
+   SPPF(P5) -> Multi-scale pooling
+        |
+   FPN Top-Down:
+        P5 -> Upsample + Concat(P4) -> C2f -> N4
+        N4 -> Upsample + Concat(P3) -> C2f -> N3
+        |
+   PAN Bottom-Up:
+        N3 -> Downsample + Concat(N4) -> C2f -> N4'
+        N4' -> Downsample + Concat(P5) -> C2f -> N5
+        |
+        +---> N3 (80x80x128)   - Small objects
+        +---> N4' (40x40x256)  - Medium objects
+        +---> N5 (20x20x512)   - Large objects
+        |
+        v
+  [HEAD: Decoupled Detection Heads]
+        |
+   For each scale (N3, N4', N5):
+        |
+        +---> Regression Branch
+        |       |---> Conv3x3 -> Conv3x3 -> 4 outputs (x,y,w,h)
+        |
+        +---> Classification Branch
+                |---> Conv3x3 -> Conv3x3 -> C outputs (class scores)
+        |
+        v
+  Predictions:
+   - N3: 80x80x3 = 19,200 predictions (small objects)
+   - N4': 40x40x3 = 4,800 predictions (medium objects)
+   - N5: 20x20x3 = 1,200 predictions (large objects)
+   - Total: 25,200 predictions per image
+        |
+        v
+  [POST-PROCESSING]
+        |
+   - Confidence thresholding (0.30 in our project)
+   - Non-Maximum Suppression (0.65 IoU threshold)
+   - Class filtering and normalization
+        |
+        v
+  Final Detections
+   - Bounding boxes [x1, y1, x2, y2]
+   - Class labels
+   - Confidence scores
+#+END_EXAMPLE
+
+** Key YOLOv8 Innovations
+
+*** 1. Anchor-Free Detection
+Traditional YOLO (v3-v5):
+- Predefined anchor boxes at each scale
+- Match ground truth to closest anchor
+- Predict offsets from anchor
+
+YOLOv8:
+- No anchor boxes needed
+- Direct prediction of object center and size
+- Simpler training and inference
+- Better generalization to varying object sizes
+
+*** 2. Decoupled Head
+Traditional coupled head:
+```
+Features -> Conv -> Conv -> [bbox + objectness + classes]
+```
+
+YOLOv8 decoupled head:
+```
+Features -> Regression Branch -> [bbox coordinates]
+         -> Classification Branch -> [class scores]
+```
+
+Benefits:
+- Separate optimization for localization and classification
+- Better convergence during training
+- Improved accuracy on both tasks
+
+*** 3. Task-Aligned Assigner (TAL)
+Assigns ground truth objects to predictions based on:
+- Classification score (how confident?)
+- IoU with ground truth (how well localized?)
+- Combined metric: alignment = classification^alpha * IoU^beta
+
+Benefits:
+- Assigns positives to best-performing predictions
+- Improves training efficiency
+- Better than static IoU-based assignment
+
+*** 4. Distribution Focal Loss (DFL)
+Bounding box regression as classification:
+- Traditional: Direct regression to (x, y, w, h)
+- DFL: Predict distribution over discrete bins
+- Focuses on ambiguous boundary cases
+- More accurate localization
+
+*** 5. C2f Module Throughout
+Replaces C3 (CSP Bottleneck):
+- More gradient pathways
+- Better information flow
+- Lighter and faster
+- Used in both backbone and neck
+
+*** 6. SPPF (Spatial Pyramid Pooling - Fast)
+Sequential max pooling:
+```
+Input -> MaxPool5x5 -> MaxPool5x5 -> MaxPool5x5 -> Concat
+```
+
+Benefits:
+- Same receptive field as SPP (13x13)
+- Faster computation (sequential vs parallel)
+- Lower memory usage
+- Captures multi-scale context efficiently
+
+** YOLOv8 vs Previous Versions
+
+| Feature | YOLOv5 | YOLOv7 | YOLOv8 |
+|---------|--------|--------|--------|
+| Backbone module | C3 | ELAN | C2f |
+| Neck module | C3 | ELAN | C2f |
+| Head type | Coupled | Coupled | Decoupled |
+| Anchor-based | Yes | Yes | No |
+| Label assignment | Static IoU | SimOTA | Task-Aligned |
+| Loss (bbox) | CIoU | CIoU | DFL + CIoU |
+| Training time | Baseline | 1.5x | 0.8x |
+| Inference speed | Baseline | 0.9x | 1.1-1.2x |
+| Accuracy (mAP) | Baseline | +1-2% | +1-2% |
+
+** Model Scaling (YOLOv8 Variants)
+
+YOLOv8 uses depth and width multipliers:
+
+| Model | Depth | Width | Params | FLOPs | mAP50-95 | Speed |
+|-------|-------|-------|--------|-------|----------|-------|
+| YOLOv8n | 0.33 | 0.25 | 3.2M | 8.7G | 37.3% | 1.47ms |
+| YOLOv8s | 0.33 | 0.50 | 11.2M | 28.6G | 44.9% | 2.33ms |
+| YOLOv8m | 0.67 | 0.75 | 25.9M | 78.9G | 50.2% | 3.86ms |
+| YOLOv8l | 1.00 | 1.00 | 43.7M | 165.2G | 52.9% | 5.47ms |
+| YOLOv8x | 1.00 | 1.25 | 68.2M | 257.8G | 53.9% | 7.46ms |
+
+Depth multiplier:
+- Controls number of C2f bottleneck repetitions
+- YOLOv8n: 1 repetition per C2f
+- YOLOv8x: 3 repetitions per C2f
+
+Width multiplier:
+- Controls number of channels
+- YOLOv8n: 64 base channels
+- YOLOv8x: 80 base channels
+
+** Training Pipeline
+
+#+BEGIN_EXAMPLE
+1. Data Loading
+   - Mosaic augmentation (combine 4 images)
+   - MixUp (blend 2 images)
+   - Random affine transforms
+   - HSV color jittering
+
+2. Forward Pass
+   - Image -> Backbone -> Neck -> Head
+   - Predictions at 3 scales
+
+3. Label Assignment (TAL)
+   - Calculate alignment metric for each prediction
+   - Assign top-k predictions as positives
+   - Rest are negatives
+
+4. Loss Calculation
+   - Classification: BCE Loss
+   - Bounding Box: DFL + CIoU Loss
+   - Weighted sum with class/box balance
+
+5. Backward Pass
+   - Gradient through decoupled heads
+   - Through neck (C2f gradients flow well)
+   - Through backbone
+
+6. Optimization
+   - Typically SGD with momentum
+   - Cosine learning rate schedule
+   - Warmup for first few epochs
+#+END_EXAMPLE
+
+** Inference Pipeline (Our Project)
+
+#+BEGIN_EXAMPLE
+1. Image Preprocessing
+   - Capture frame from camera (640x480 typically)
+   - Rotation correction (gyroscope data)
+   - Resize/letterbox to 640x640
+   - Normalize to [0, 1]
+
+2. Model Inference
+   - Forward pass through YOLOv8x-OIV7
+   - CPU: 100-250ms
+   - GPU: 60-100ms (when enabled)
+
+3. Post-Processing
+   - Confidence threshold: 0.30 (safety-critical)
+   - NMS threshold: 0.65
+   - Class filtering (blacklist buildings)
+   - Class normalization (man/woman -> person)
+
+4. Tracking
+   - DeepSORT for temporal consistency
+   - Track ID assignment
+   - Trajectory history
+
+5. Analysis
+   - Movement detection (direction, speed)
+   - Collision prediction
+   - Distance estimation
+
+6. Output
+   - Visual: Bounding boxes on canvas
+   - Audio: Spatial announcements for blind users
+#+END_EXAMPLE
+
+** Advantages for Our Use Case
+
+*** Real-Time Performance
+- YOLOv8 optimized for speed
+- 100-250ms on CPU acceptable for navigation
+- 800ms detection loop provides timely warnings
+
+*** Multi-Scale Detection
+- Small: Person far away (early warning)
+- Medium: Furniture at medium distance (avoidance planning)
+- Large: Door/wall up close (immediate obstacle)
+
+*** High Accuracy
+- 53.9% mAP50-95 (YOLOv8x on COCO)
+- 600+ classes (OIV7 training)
+- Low false negatives critical for safety
+
+*** Anchor-Free Simplicity
+- No anchor tuning needed
+- Better generalization to indoor objects
+- Simpler deployment and maintenance
+
+*** Decoupled Head
+- Better localization for obstacle avoidance
+- Better classification for object identification
+- Both critical for blind navigation
+
+* Related Concepts
+
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130300-object_detection_paradigms][Object Detection Paradigms]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130900-yolo_loss_function][YOLO Loss Function]]
+- [[id:20251015131000-yolo_versions_evolution][YOLO Versions Evolution]]
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]] - YOLOv8 C2f backbone
+- [[id:20251015130900-feature_pyramid_networks][Feature Pyramid Networks]] - YOLOv8 PAN-FPN neck
+
+* References to Project Code
+
+- [[id:20251015112400-yolo_detect][YOLODetector.detect()]] - Implementation
+- [[id:20251015112800-yolo_detector_class][YOLODetector Class]] - Class structure
+
+* Footnotes
+
+[fn:1] Original YOLO paper: Redmon et al., "You Only Look Once: Unified, Real-Time Object Detection" (2016)
+
+[fn:2] Speed vs accuracy trade-off configurable through model variants (nano, small, medium, large, extra-large)
+
+[fn:3] Our project uses YOLOv8x-OIV7: extra-large variant trained on Open Images v7 (600+ classes)

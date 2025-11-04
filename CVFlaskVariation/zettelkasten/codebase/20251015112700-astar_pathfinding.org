@@ -1,0 +1,166 @@
+:PROPERTIES:
+:ID:       20251015112700-astar_pathfinding
+:ROAM_REFS: [[file:../app/services/pathfinder.py::def astar_pathfinding]]
+:END:
+#+title: astar_pathfinding() Function [DEPRECATED]
+#+filetags: :function:pathfinding:astar:algorithm:deprecated:
+
+* STATUS: DEPRECATED (2025-10-15)
+
+** Replaced By
+- [[id:20251015184400-reactive_navigation][Reactive Navigation System]]
+- [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]]
+
+** Reason for Deprecation
+A* pathfinding is fundamentally incompatible with dynamic environments:
+- Assumes static obstacles (walls, buildings)
+- Requires complete environment knowledge
+- Path calculated once becomes outdated immediately
+- Cannot handle moving people, vehicles in camera view
+- See [[id:20251015184400-reactive_navigation][Reactive Navigation]] for explanation
+
+** Current Status
+- Code preserved in pathfinder.py for backwards compatibility
+- /calculate_path endpoint still functional
+- Recommended for static map scenarios only
+- Not recommended for real-time blind navigation
+
+* Function Signature
+
+#+begin_src python
+def astar_pathfinding(grid, start, goal):
+    """Enhanced A* pathfinding algorithm with Euclidean heuristic."""
+    # ...
+#+end_src
+
+Location: app/services/pathfinder.py:64
+
+* Description
+
+Implements A* algorithm to find shortest safe path through occupancy grid.
+DEPRECATED: Use [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]] for dynamic environments.
+
+* Parameters
+
+- grid :: np.ndarray - 2D occupancy grid (0=free, 1=obstacle)
+- start :: (x, y) - Start position in grid coordinates
+- goal :: (x, y) - Goal position in grid coordinates
+
+* Returns
+
+- list[(x, y)] - Waypoints from start to goal
+- None - If no path exists
+
+* Algorithm
+
+See [[id:20251015119300-astar_algorithm][A* Algorithm]] for general explanation.
+
+** 1. Validation
+#+begin_src python
+if not (0 <= start[0] < width and 0 <= start[1] < height):
+    return None
+if grid[start[1], start[0]] == 1:  # Start in obstacle
+    return None
+if grid[goal[1], goal[0]] == 1:    # Goal in obstacle
+    return None
+#+end_src
+
+** 2. Initialization
+#+begin_src python
+open_set = [(0, 0, start)]  # (f_score, counter, position)
+came_from = {}              # Path reconstruction
+g_score = {start: 0}        # Cost from start
+f_score = {start: heuristic(start, goal)}  # Estimated total cost
+#+end_src
+
+** 3. Main Loop
+#+begin_src python
+while open_set:
+    current = heappop(open_set)
+
+    if current == goal:
+        return reconstruct_path(came_from, current)
+
+    for neighbor in get_8_neighbors(current):
+        if grid[neighbor] == 1:  # Obstacle
+            continue
+
+        move_cost = 1.414 if diagonal else 1.0
+        tentative_g = g_score[current] + move_cost
+
+        if tentative_g < g_score.get(neighbor, infinity):
+            came_from[neighbor] = current
+            g_score[neighbor] = tentative_g
+            f_score[neighbor] = tentative_g + heuristic(neighbor, goal)
+            heappush(open_set, (f_score[neighbor], counter, neighbor))
+            counter += 1
+#+end_src
+
+** 4. Heuristic Function
+Uses [[id:20251015119400-manhattan_distance][Manhattan Distance]]:
+#+begin_src python
+def heuristic(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1])
+#+end_src
+
+** 5. Path Reconstruction
+#+begin_src python
+path = [goal]
+while goal in came_from:
+    goal = came_from[goal]
+    path.append(goal)
+path.reverse()
+return path
+#+end_src
+
+* Movement Costs
+
+- Cardinal (↑↓←→): 1.0
+- Diagonal (↗↘↙↖): 1.414 (√2)
+
+Diagonal movement allowed for smoother paths.
+
+* Complexity
+
+- Time: O(b^d) where b=branching factor (8), d=depth
+- Space: O(b^d)
+- Typical: 100-500ms for 640x480 image with 20px grid
+
+* Optimality
+
+A* is:
+- Optimal :: Finds shortest path (given admissible heuristic)
+- Complete :: Always finds path if exists
+- Admissible :: [[id:20251015119400-manhattan_distance][Manhattan distance]] never overestimates
+
+* Related Notes
+
+** Part Of
+- [[id:20251015111600-pathfinding_service_moc][Pathfinding Service MOC]]
+- [[id:20251015112000-algorithms_moc][Algorithms MOC]]
+
+** Called By
+- [[id:20251015119500-calculate_path][calculate_path()]] - Navigation route
+
+** Uses
+- [[id:20251015119300-astar_algorithm][A* Algorithm]]
+- [[id:20251015119400-manhattan_distance][Manhattan Distance]]
+- [[id:20251015119600-priority_queue][Priority Queue (heapq)]]
+
+** Related Functions
+- [[id:20251015119700-create_occupancy_grid][create_occupancy_grid()]] - Create grid from detections
+- [[id:20251015119800-calculate_path_safety][calculate_path_safety()]] - Evaluate path safety
+- [[id:20251015119900-convert_path_to_pixels][convert_path_to_pixels()]] - Grid to pixel coords
+
+* Grid Creation
+
+See [[id:20251015119700-create_occupancy_grid][create_occupancy_grid()]] for how detection bboxes
+are converted to binary occupancy grid with safety margins.
+
+* Performance
+
+Grid size trade-off:
+- Smaller cells (10px) :: More accurate, slower (O(n^2))
+- Larger cells (30px) :: Faster, less precise
+
+Current: 20px cells (balance)

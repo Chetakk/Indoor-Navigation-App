@@ -1,0 +1,420 @@
+:PROPERTIES:
+:ID:       20251015184700-generate_voice_guidance
+:ROAM_REFS: [[file:../app/services/pathfinder.py::def generate_voice_guidance]]
+:END:
+#+title: generate_voice_guidance() Function
+#+filetags: :function:navigation:accessibility:voice:audio:
+
+* Function Signature
+
+#+begin_src python
+def generate_voice_guidance(safe_direction, goal_direction, distance_to_goal, obstacles):
+    """Generate human-readable voice guidance for navigation."""
+    # ...
+#+end_src
+
+Location: app/services/pathfinder.py:405
+
+* Description
+
+Converts reactive navigation output (safe direction vector, obstacles, distance)
+into natural language voice guidance for blind users.
+
+Generates context-aware messages with:
+- Direction instructions (walk straight, turn left, etc.)
+- Distance to goal
+- Obstacle warnings
+
+* Parameters
+
+- safe_direction :: np.ndarray - Safe walking direction from find_safe_direction()
+- goal_direction :: np.ndarray - Direct direction to goal
+- distance_to_goal :: float - Distance to goal in pixels
+- obstacles :: list[dict] - Obstacle list sorted by threat
+
+* Returns
+
+dict with:
+- primary :: str - Main navigation message
+- warnings :: list[str] - Obstacle warnings
+- full_message :: str - Complete message (primary + warnings)
+
+* Algorithm
+
+** 1. Calculate Deviation
+
+#+begin_src python
+deviation_angle = degrees(arccos(clip(dot(safe_direction, goal_direction), -1, 1)))
+#+end_src
+
+Angle between safe direction and direct goal direction.
+
+** 2. Determine Direction Text
+
+#+begin_src python
+if deviation_angle < 10:
+    direction_text = "Walk straight ahead"
+elif deviation_angle < 30:
+    cross = cross_product(goal_direction, safe_direction)
+    side = "slightly right" if cross > 0 else "slightly left"
+    direction_text = f"Bear {side}"
+else:
+    cross = cross_product(goal_direction, safe_direction)
+    side = "right" if cross > 0 else "left"
+    direction_text = f"Turn {side}"
+#+end_src
+
+Uses cross product to determine left vs right.
+
+** 3. Distance Estimation
+
+#+begin_src python
+estimated_meters = distance_to_goal / 100  # Rough: 100px ~= 1m
+
+if estimated_meters < 2:
+    distance_text = "almost there"
+elif estimated_meters < 5:
+    distance_text = f"{int(estimated_meters)} meters"
+else:
+    distance_text = f"{int(estimated_meters)} meters ahead"
+#+end_src
+
+** 4. Check Obstacles
+
+#+begin_src python
+warnings = []
+for obs in obstacles[:3]:  # Top 3 threats
+    if obs['in_path'] and obs['distance'] < 150:  # Close obstacle
+        obs_dir = obs['direction']
+        cross = cross_product(safe_direction, obs_dir)
+        side = "right" if cross > 0 else "left"
+
+        label = obs['label']
+        moving_text = "moving " if obs['is_moving'] else ""
+        warnings.append(f"{moving_text}{label} on {side}")
+#+end_src
+
+** 5. Build Complete Message
+
+#+begin_src python
+primary_message = f"{direction_text}, {distance_text}"
+
+full_message = primary_message
+if warnings:
+    full_message += ", " + ", ".join(warnings)
+
+return {
+    'primary': primary_message,
+    'warnings': warnings,
+    'full_message': full_message
+}
+#+end_src
+
+* Direction Mapping
+
+** Deviation Ranges
+
+| Deviation | Direction Text         | Meaning                  |
+|-----------+------------------------+--------------------------|
+| 0-10deg   | Walk straight ahead    | Minimal deviation        |
+| 10-30deg  | Bear slightly left/right | Gentle course correction |
+| 30-90deg  | Turn left/right        | Significant turn needed  |
+
+** Left vs Right Determination
+
+Uses cross product of 2D vectors:
+#+begin_src python
+cross = goal_direction[0] * safe_direction[1] -
+        goal_direction[1] * safe_direction[0]
+
+if cross > 0:
+    side = "right"
+else:
+    side = "left"
+#+end_src
+
+Cross product sign indicates rotation direction.
+
+* Distance Estimation
+
+** Pixel to Meter Conversion
+
+Rough approximation:
+#+begin_src python
+meters = pixels / 100
+#+end_src
+
+Assumes:
+- Typical camera field of view
+- Objects at medium distance
+- No depth information
+
+Very approximate! Could be improved with:
+- Depth sensors
+- Monocular depth estimation
+- Known object sizes
+- Camera calibration
+
+** Distance Ranges
+
+| Pixels | Meters | Text          |
+|--------+--------+---------------|
+| < 200  | < 2    | almost there  |
+| 200-500| 2-5    | X meters      |
+| > 500  | > 5    | X meters ahead|
+
+* Obstacle Warning Criteria
+
+Obstacle included in warnings if:
+1. in_path == True (obstacle in forward cone)
+2. distance < 150 pixels (close enough to matter)
+3. Among top 3 threats
+
+** Moving vs Stationary
+
+#+begin_src python
+moving_text = "moving " if obs['is_moving'] else ""
+warnings.append(f"{moving_text}{label} on {side}")
+#+end_src
+
+Examples:
+- "person on right" (stationary)
+- "moving car on left" (moving)
+
+** Side Determination
+
+Uses cross product with safe_direction (not goal_direction):
+#+begin_src python
+cross = cross_product(safe_direction, obs_direction)
+side = "right" if cross > 0 else "left"
+#+end_src
+
+Important: Relative to safe walking direction, not goal!
+
+* Example Outputs
+
+** Scenario 1: Clear Path
+#+begin_src python
+Input:
+- safe_direction = goal_direction = [0, 1]
+- distance_to_goal = 450
+- obstacles = []
+
+Output:
+{
+    'primary': 'Walk straight ahead, 4 meters ahead',
+    'warnings': [],
+    'full_message': 'Walk straight ahead, 4 meters ahead'
+}
+#+end_src
+
+** Scenario 2: Slight Deviation
+#+begin_src python
+Input:
+- safe_direction = [0.259, 0.966]  # ~15deg left
+- goal_direction = [0, 1]
+- distance_to_goal = 300
+- obstacles = [person at 100px on right]
+
+Output:
+{
+    'primary': 'Bear slightly left, 3 meters',
+    'warnings': ['person on right'],
+    'full_message': 'Bear slightly left, 3 meters, person on right'
+}
+#+end_src
+
+** Scenario 3: Sharp Turn with Moving Obstacle
+#+begin_src python
+Input:
+- safe_direction = [0.707, 0.707]  # ~45deg right
+- goal_direction = [0, 1]
+- distance_to_goal = 550
+- obstacles = [moving car at 80px ahead-left]
+
+Output:
+{
+    'primary': 'Turn right, 5 meters ahead',
+    'warnings': ['moving car on left'],
+    'full_message': 'Turn right, 5 meters ahead, moving car on left'
+}
+#+end_src
+
+** Scenario 4: Nearly There
+#+begin_src python
+Input:
+- safe_direction = [0, 1]
+- goal_direction = [0, 1]
+- distance_to_goal = 120
+- obstacles = []
+
+Output:
+{
+    'primary': 'Walk straight ahead, almost there',
+    'warnings': [],
+    'full_message': 'Walk straight ahead, almost there'
+}
+#+end_src
+
+* Audio Integration
+
+Frontend receives guidance and announces it:
+#+begin_src javascript
+if (data.guidance.warnings.length > 0 || data.deviation_angle > 20) {
+    queueAnnouncement(data.guidance.full_message, 'medium');
+}
+#+end_src
+
+Only announces if:
+- Warnings present (obstacles nearby)
+- Significant deviation (> 20deg from goal)
+
+Prevents audio spam from minor course corrections.
+
+* Natural Language Design
+
+** Principles
+
+1. Concise - Short messages for quick comprehension
+2. Actionable - Clear what user should do
+3. Spatial - Use relative directions (left/right)
+4. Contextual - Include relevant obstacles only
+5. Natural - Human-like phrasing
+
+** Vocabulary
+
+Direction words:
+- Walk straight ahead
+- Bear slightly left/right
+- Turn left/right
+
+Distance words:
+- almost there
+- X meters
+- X meters ahead
+
+Obstacle descriptors:
+- person on right
+- moving car on left
+- obstacle ahead
+
+** Alternatives Considered
+
+More detailed:
+- "Turn 30 degrees to the right" - Too technical
+- "Walk forward for 4.5 meters" - False precision
+
+Less detailed:
+- "Go right" - Not clear if turn or bear
+- "Keep walking" - No distance info
+
+Current design balances detail and naturalness.
+
+* Accessibility Considerations
+
+** For Blind Users
+
+- Spatial awareness - "on right/left" relative to walking direction
+- Movement awareness - "moving" prefix for dynamic obstacles
+- Distance awareness - "almost there" vs "5 meters ahead"
+- Urgency implicit - Warnings indicate close obstacles
+
+** Audio Priority
+
+Frontend assigns priority based on warnings:
+#+begin_src javascript
+priority = 'medium'  // For navigation guidance
+priority = 'high'    // If warnings present
+priority = 'critical' // For collision warnings (separate system)
+#+end_src
+
+* Limitations
+
+** Distance Accuracy
+
+Pixel-to-meter conversion is rough approximation:
+- No depth information
+- Assumes typical distances
+- Varies with camera angle
+- Different for different object types
+
+Better with depth sensors or monocular depth estimation.
+
+** Obstacle Position
+
+"on right/left" is 2D projection:
+- Doesn't indicate if obstacle is high/low
+- Doesn't indicate if obstacle is far/close in depth
+- 2D camera limitation
+
+** Language
+
+Currently English-only:
+- Could be internationalized
+- Different cultures may prefer different phrasing
+
+* Performance
+
+- Computation: < 1ms
+- String formatting is fast
+- No heavy operations
+- Negligible in overall pipeline
+
+* Related Notes
+
+** Part Of
+- [[id:20251015184400-reactive_navigation][Reactive Navigation System]]
+
+** Called By
+- [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]]
+
+** Uses
+- NumPy (dot, cross, arccos, degrees)
+
+** Related
+- [[id:20251015121100-audio_system][Audio System]] - Receives and speaks messages
+- [[id:20251015121200-accessibility_features][Accessibility Features]]
+
+* Future Enhancements
+
+** Depth Integration
+
+Use depth information for accurate distances:
+#+begin_src python
+actual_meters = depth_map[obstacle_position]
+distance_text = f"{actual_meters:.1f} meters"
+#+end_src
+
+** Obstacle Height
+
+Add vertical position awareness:
+#+begin_src python
+if obstacle_y < user_head_height:
+    warnings.append(f"low {label} ahead")
+else:
+    warnings.append(f"{label} ahead")
+#+end_src
+
+** Trajectory Prediction
+
+Warn about future obstacle positions:
+#+begin_src python
+if obstacle_approaching:
+    warnings.append(f"{label} approaching from {side}")
+#+end_src
+
+** Personalization
+
+User preferences:
+- Verbosity level
+- Metric vs imperial units
+- Language/accent
+- Speed of speech
+
+** Context Memory
+
+Remember recent announcements to avoid repetition:
+#+begin_src python
+if message != last_message or time_since_last > threshold:
+    announce(message)
+#+end_src

@@ -1,0 +1,315 @@
+:PROPERTIES:
+:ID:       20251015130400-yolo_grid_system
+:ROAM_ALIASES: "YOLO Grid" "Grid Cell" "Spatial Grid"
+:END:
+#+title: YOLO Grid System
+#+filetags: :yolo:grid:architecture:spatial_division:
+
+* Core Concept
+
+YOLO divides input image into SxS grid, where each cell is responsible for detecting objects whose center falls within it.
+
+Key Innovation: Transforms detection into structured prediction problem with spatial organization.
+
+* Grid Division Mechanism
+
+** Image Partitioning
+Input image (e.g., 416x416) divided into grid:
+- Original YOLO: 7x7 grid
+- YOLOv2: 13x13 grid
+- YOLOv3+: Multiple grids (13x13, 26x26, 52x52)
+
+** Cell Responsibility
+Each grid cell predicts:
+- B bounding boxes (e.g., B=3)
+- Confidence score per box
+- C class probabilities (shared across boxes in cell)
+
+** Coordinate System
+Cell coordinates: (cx, cy) in range [0, S-1]
+Each cell responsible for region:
+- Top-left: (cx * W/S, cy * H/S)
+- Bottom-right: ((cx+1) * W/S, (cy+1) * H/S)
+
+* Multi-Scale Grid System (Modern YOLO)
+
+** Three Detection Scales (YOLOv3+)
+
+*** Large Grid (52x52)
+- Fine-grained spatial resolution
+- Detects small objects
+- Cell size: ~8x8 pixels (416/52)
+- More cells = more potential detections
+
+*** Medium Grid (26x26)
+- Medium spatial resolution
+- Detects medium objects
+- Cell size: ~16x16 pixels (416/26)
+- Balanced coverage
+
+*** Small Grid (13x13)
+- Coarse spatial resolution
+- Detects large objects
+- Cell size: ~32x32 pixels (416/13)
+- Fewer cells, larger receptive field
+
+** Scale Assignment
+Object assigned to grid based on ground truth size:
+- Small objects -> Large grid (52x52)
+- Medium objects -> Medium grid (26x26)
+- Large objects -> Small grid (13x13)
+
+** Why Multi-Scale?
+Single grid struggles with diverse object sizes:
+- Small grid: Misses small objects
+- Large grid: Too many predictions, computational cost
+
+Multi-scale provides:
+- Better size coverage
+- More appropriate spatial resolution
+- Improved recall
+
+* Cell Prediction Structure
+
+** Per-Cell Output (Original YOLO)
+Tensor: S x S x (B*5 + C)
+- S: Grid dimension (e.g., 7)
+- B: Bounding boxes per cell (e.g., 2)
+- 5: (x, y, w, h, confidence)
+- C: Number of classes (e.g., 20 for COCO)
+
+Example (7x7 grid, 2 boxes, 20 classes):
+Output: 7 x 7 x 30
+
+** Per-Cell Output (Modern YOLO)
+Tensor: S x S x (B*(5 + C))
+- Class probabilities per box (not shared)
+
+Example (13x13 grid, 3 boxes, 80 classes):
+Output: 13 x 13 x 255 (3 * 85)
+
+* Bounding Box Encoding
+
+** Center Coordinates (x, y)
+Relative to cell:
+- Predicted as offsets [0, 1] within cell
+- Absolute position: (cx + sigmoid(tx), cy + sigmoid(ty))
+- cx, cy: Cell coordinates
+- tx, ty: Network predictions
+
+** Dimensions (w, h)
+Relative to anchor boxes (modern YOLO):
+- w = anchor_w * exp(tw)
+- h = anchor_h * exp(th)
+- tw, th: Network predictions
+- See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+** Why Sigmoid for x, y?
+- Constrains predictions to cell boundaries
+- Prevents instability during training
+- Each cell only predicts nearby objects
+
+** Why Exponential for w, h?
+- Ensures positive dimensions
+- Allows arbitrary sizes
+- Anchors provide scale prior
+
+* Object Assignment During Training
+
+** Ground Truth Matching
+For each ground truth object:
+1. Find cell containing object center
+2. Assign to that cell
+3. Match to best anchor (highest IoU)
+
+** Responsibility
+Only assigned cell's specific box penalized for:
+- Coordinate errors
+- Confidence errors
+- Classification errors
+
+Non-responsible boxes:
+- Only penalized for false positive confidence
+
+** Constraint
+Each cell predicts limited number of boxes:
+- Original YOLO: 2 boxes per cell
+- Modern YOLO: 3 boxes per cell
+- Problem: Multiple objects in same cell
+
+* Handling Multiple Objects
+
+** Same Cell Problem
+If multiple object centers in same cell:
+- Cell has limited prediction slots (e.g., 3)
+- Can only detect up to B objects
+- Limitation of grid-based approach
+
+** Mitigation Strategies
+
+*** Finer Grid
+- Larger grid (52x52 vs 13x13)
+- Smaller cells
+- Less likely multiple objects in same cell
+
+*** Multi-Scale Detection
+- Different scales handle different densities
+- Small objects on fine grid less clustered
+
+*** Anchor Diversity
+- Different aspect ratios
+- Better coverage of object types
+- See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+*** Post-processing
+- NMS combines overlapping predictions
+- Multiple cells may predict same object
+- See [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Computational Implications
+
+** Fixed Output Size
+- Grid size determines output dimensions
+- Predictable memory footprint
+- Efficient GPU utilization
+
+** Parallel Processing
+- All cells processed simultaneously
+- Single forward pass
+- No sequential region proposals
+
+** Dense Prediction
+- Prediction at every cell
+- Many predictions (e.g., 13*13*3 = 507 boxes per scale)
+- Requires aggressive filtering
+
+* Grid System Evolution
+
+** YOLOv1 (2016)
+- Single 7x7 grid
+- 2 boxes per cell
+- Class probabilities shared
+- Total predictions: 98
+
+** YOLOv2 (2016)
+- Single 13x13 grid
+- 5 anchor boxes per cell
+- Passthrough layer for fine features
+- Total predictions: 845
+
+** YOLOv3 (2018)
+- Three scales: 13x13, 26x26, 52x52
+- 3 anchors per cell per scale
+- Independent class predictions
+- Total predictions: 10,647
+
+** YOLOv4+ (2020+)
+- Refinement of v3 approach
+- Better anchor selection
+- Improved feature aggregation
+
+* Design Trade-offs
+
+** Grid Size Selection
+
+*** Larger Grid (52x52)
+Advantages:
+- Better spatial resolution
+- More accurate localization
+- Better for small objects
+
+Disadvantages:
+- More computations
+- More predictions to filter
+- Higher memory usage
+
+*** Smaller Grid (13x13)
+Advantages:
+- Faster computation
+- Fewer predictions
+- Larger receptive field
+
+Disadvantages:
+- Lower spatial resolution
+- Misses small objects
+- Less precise localization
+
+** Predictions Per Cell
+
+*** More Boxes (5+)
+Advantages:
+- Handle more objects per cell
+- Better aspect ratio coverage
+
+Disadvantages:
+- More computations
+- More false positives
+- Harder training (imbalance)
+
+*** Fewer Boxes (2-3)
+Advantages:
+- Faster
+- Simpler training
+- Fewer false positives
+
+Disadvantages:
+- Limited objects per cell
+- May miss detections
+
+* Visualization and Interpretation
+
+** Grid Overlay
+Visual representation:
+```
++---+---+---+---+
+| 1 | 2 | 3 | 4 |  Each cell contains:
++---+---+---+---+  - B bounding box predictions
+| 5 | 6 | 7 | 8 |  - Confidence scores
++---+---+---+---+  - Class probabilities
+```
+
+** Heatmap Visualization
+- Confidence per cell
+- Object centers as peaks
+- Visualize detection density
+
+** Prediction Density
+- Most predictions near zero confidence
+- Few high-confidence predictions
+- NMS reduces to final detections
+
+* Practical Considerations
+
+** Input Resolution
+Grid derived from input size:
+- 416x416: Typical training size
+- 320x320: Faster, less accurate
+- 608x608: Slower, more accurate
+- Must be divisible by stride (usually 32)
+
+** Stride Relationship
+Grid size = Input size / Total stride
+- YOLOv3: Stride 32, 16, 8
+- 416/32 = 13, 416/16 = 26, 416/8 = 52
+
+** Aspect Ratio Handling
+- Grid cells are square
+- Objects have arbitrary aspect ratios
+- Anchors provide aspect ratio priors
+- See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+* Related Concepts
+
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Footnotes
+
+[fn:1] Grid system enables fully convolutional architecture - no region proposals needed
+
+[fn:2] Multi-scale grids analogous to feature pyramid but with explicit spatial division
+
+[fn:3] Grid constraint (limited objects per cell) is main limitation vs anchor-free methods

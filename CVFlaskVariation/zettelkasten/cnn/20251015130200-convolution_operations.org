@@ -1,0 +1,274 @@
+:PROPERTIES:
+:ID:       20251015130200-convolution_operations
+:ROAM_ALIASES: "Convolution" "Conv Operation" "2D Convolution"
+:END:
+#+title: Convolution Operations in CNNs
+#+filetags: :convolution:cnn:operations:mathematics:
+
+* Core Concept
+
+Convolution is a mathematical operation that applies a learnable filter (kernel) across an input to extract features.
+
+Core Idea: Local pattern detection through sliding window with shared weights.
+
+* Mathematical Definition
+
+** Discrete 2D Convolution
+(f * g)[i,j] = sum_m sum_n f[m,n] * g[i-m, j-n]
+
+In practice (cross-correlation, used in deep learning):
+Output[i,j] = sum_m sum_n Input[i+m, j+n] * Kernel[m,n] + bias
+
+** Key Difference
+True convolution flips kernel; deep learning uses cross-correlation.
+The distinction is academic since kernels are learned.
+
+* Convolution Mechanics
+
+** Input Dimensions
+- Height (H)
+- Width (W)
+- Channels (C_in) - e.g., RGB = 3 channels
+
+** Kernel/Filter
+- Height (K_h) - typically 3x3, 5x5, 7x7
+- Width (K_w)
+- Input channels (C_in)
+- Output channels (C_out) - number of filters
+
+** Single Convolution Step
+1. Position kernel over input region
+2. Element-wise multiplication
+3. Sum all products
+4. Add bias term
+5. Result is single output value
+
+** Full Operation
+- Slide kernel across entire input
+- Each position produces one output value
+- Each filter produces one feature map
+- Multiple filters = multiple feature maps (output channels)
+
+* Output Dimensions
+
+** Formula
+Output_height = floor((H + 2*P - K_h) / S) + 1
+Output_width = floor((W + 2*P - K_w) / S) + 1
+Output_channels = C_out
+
+Where:
+- P: Padding
+- S: Stride
+- K: Kernel size
+
+** Example
+Input: 224x224x3
+Kernel: 3x3, 64 filters
+Stride: 1, Padding: 1
+Output: 224x224x64
+
+* Hyperparameters
+
+** 1. Kernel Size
+*** Small Kernels (3x3)
+- Modern standard (VGG, ResNet)
+- Multiple small kernels = fewer parameters than large kernel
+- Two 3x3 layers = receptive field of 5x5
+- More non-linearity (more ReLU activations)
+
+*** Large Kernels (7x7, 11x11)
+- Early layers of older architectures (AlexNet)
+- Larger receptive field immediately
+- More parameters
+- Less common in modern designs
+
+** 2. Stride
+Step size when sliding kernel
+
+*** Stride = 1
+- Dense sampling
+- Maximum information retention
+- Larger output size
+
+*** Stride = 2
+- Downsampling by factor of 2
+- Reduces spatial dimensions
+- Replaces pooling in some architectures
+- Less computation
+
+** 3. Padding
+Border handling strategy
+
+*** Valid Padding (No Padding)
+- No padding added
+- Output smaller than input
+- Information loss at borders
+
+*** Same Padding
+- Pad to maintain spatial dimensions
+- Output size = Input size (with stride=1)
+- Typically pad with zeros
+
+*** Formula
+Padding = (K - 1) / 2  (for same padding with stride=1)
+
+** 4. Dilation
+Spacing between kernel elements
+
+*** Standard Convolution
+- Dilation = 1
+- Contiguous kernel
+
+*** Dilated/Atrous Convolution
+- Dilation > 1
+- Expands receptive field without adding parameters
+- Used in DeepLab, detection networks
+- Receptive field = K + (K-1)*(D-1), where D is dilation
+
+* Types of Convolutions
+
+** 1. Standard Convolution
+- Described above
+- Most common operation
+
+** 2. Depthwise Convolution
+- Apply single filter per input channel
+- Parameters: K*K*C_in
+- Used in MobileNets (efficient)
+
+** 3. Pointwise Convolution (1x1)
+- Kernel size 1x1
+- Channel-wise linear combination
+- Dimensionality reduction/expansion
+- Introduced in Network-in-Network
+
+** 4. Depthwise Separable Convolution
+- Depthwise conv + Pointwise conv
+- Drastically reduces parameters
+- Standard: K*K*C_in*C_out
+- Separable: K*K*C_in + C_in*C_out
+- Used in MobileNet, Xception
+
+** 5. Grouped Convolution
+- Split channels into groups
+- Each group convolved independently
+- Reduces computation
+- Used in ResNeXt
+
+** 6. Transposed Convolution (Deconvolution)
+- Upsampling operation
+- Learnable upsampling vs interpolation
+- Used in segmentation, GANs
+
+* Feature Map Visualization
+
+** Channel Interpretation
+Each output channel (feature map) detects different pattern:
+- Channel 1: Horizontal edges
+- Channel 2: Vertical edges
+- Channel 3: Corners
+- Channel 4: Textures
+- ... (automatically learned)
+
+** Depth Stacking
+Multiple convolution layers stack features:
+Layer 1: Edges/gradients
+Layer 2: Textures/patterns
+Layer 3: Parts/components
+Layer 4: Objects/concepts
+
+* Computational Efficiency
+
+** Parameter Count
+Single Conv Layer: (K_h * K_w * C_in + 1) * C_out
+
+Example:
+- 3x3 kernel, 64->128 channels
+- Parameters: (3*3*64 + 1) * 128 = 73,856
+
+** Computation (FLOPs)
+Conv Layer: 2 * K_h * K_w * C_in * C_out * H_out * W_out
+
+(Factor of 2: multiply and add)
+
+** Memory
+Forward Pass: Store activations for backprop
+- Dominant memory consumer
+- Trade-off with batch size
+
+* Weight Sharing and Parameter Efficiency
+
+** Key Advantage over Fully-Connected
+FC Layer (flatten 224x224x3 to 4096):
+- Parameters: 224*224*3*4096 = 615 million
+
+Conv Layer (3x3x3 to 64 channels):
+- Parameters: 3*3*3*64 = 1,728
+
+** Translation Equivariance
+Same feature detector applied everywhere:
+- Shift input -> shifted output
+- Learn once, detect anywhere
+- Efficient use of data
+
+* Practical Considerations
+
+** Initialization
+- Xavier/Glorot: Variance preservation
+- He initialization: Better for ReLU
+- Important for training stability
+
+** Border Effects
+- Pixels near border have less context
+- Padding helps but not perfect
+- Early layers most affected
+
+** Computational Optimization
+- Im2col algorithm: Transform to matrix multiplication
+- FFT-based convolution: For large kernels
+- Winograd algorithm: Fast small kernels
+- Modern frameworks use optimized CUDA kernels
+
+* Design Patterns
+
+** Bottleneck Architecture
+1. 1x1 conv (reduce channels)
+2. 3x3 conv (feature extraction)
+3. 1x1 conv (expand channels)
+Used in ResNet, Inception
+
+** Inverted Bottleneck
+1. 1x1 conv (expand channels)
+2. 3x3 depthwise conv
+3. 1x1 conv (reduce channels)
+Used in MobileNetV2
+
+* Applications in YOLO
+
+** Feature Extraction
+- Multiple conv layers in backbone
+- Extract hierarchical features
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+** Detection Head
+- 1x1 convolutions for predictions
+- Output: Bounding boxes, classes, confidence
+
+** Efficient Design
+- Depthwise separable convs in lightweight versions
+- Grouped convolutions for efficiency
+
+* Related Concepts
+
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015131100-activation_functions][Activation Functions]]
+- [[id:20251015131200-batch_normalization][Batch Normalization]]
+
+* Footnotes
+
+[fn:1] In signal processing, convolution involves kernel flipping; deep learning uses cross-correlation
+
+[fn:2] Two stacked 3x3 convolutions have same receptive field as single 5x5 but fewer parameters: 2*(9C^2) vs 25C^2
+
+[fn:3] Modern GPUs heavily optimized for convolution operations (TensorCores, cuDNN)

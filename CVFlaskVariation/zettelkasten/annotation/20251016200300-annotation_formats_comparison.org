@@ -1,0 +1,420 @@
+#+TITLE: Annotation Formats Comparison
+#+DATE: 2025-10-16 20:03
+#+TAGS: :annotation: :format: :comparison:
+#+ID: 20251016200300
+
+:PROPERTIES:
+:ID:       20251016200300
+:ROAM_ALIASES: "Format Comparison" "Annotation Standards" "Label Formats"
+:END:
+
+* Overview
+
+Different object detection frameworks and annotation tools use different formats for storing bounding box annotations. This note compares the most common formats to help choose the right one for specific use cases.
+
+* Format Summary Table
+
+| Format      | File Type | Coordinates | Normalized | Best For            |
+|-------------|-----------|-------------|------------|---------------------|
+| YOLO        | .txt      | XYWH Center | Yes        | YOLO training       |
+| COCO        | .json     | XYWH LTWH   | No         | Large datasets      |
+| Pascal VOC  | .xml      | XYXY        | No         | Legacy projects     |
+| LabelMe     | .json     | Polygon     | No         | Complex shapes      |
+| TFRecord    | .tfrecord | Various     | Optional   | TensorFlow          |
+
+* YOLO Format
+
+** Structure
+- Plain text file (.txt)
+- One file per image
+- One line per object
+- Space-separated values
+
+** Format
+#+BEGIN_EXAMPLE
+<class_id> <x_center> <y_center> <width> <height>
+#+END_EXAMPLE
+
+** Example
+#+BEGIN_EXAMPLE
+0 0.515625 0.428125 0.312500 0.625000
+2 0.234375 0.156250 0.093750 0.125000
+#+END_EXAMPLE
+
+** Advantages
+- Simple, human-readable format
+- Small file size
+- Fast parsing
+- Normalized coordinates (resolution-independent)
+- Direct YOLO training support
+
+** Disadvantages
+- No metadata (image dimensions, source, etc.)
+- No hierarchical information
+- Requires separate class name file
+- Only supports bounding boxes (no polygons, keypoints)
+
+** Use Cases
+- YOLO model training
+- Simple annotation tasks
+- Storage-efficient datasets
+- Quick prototyping
+
+See [[id:20251016200100][YOLO Label Format]] for details.
+
+* COCO Format
+
+** Structure
+- Single JSON file for entire dataset
+- Hierarchical structure with images, annotations, categories
+- Supports multiple annotation types
+
+** Format
+#+BEGIN_SRC json
+{
+  "images": [
+    {
+      "id": 1,
+      "file_name": "image001.jpg",
+      "width": 640,
+      "height": 480
+    }
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [100, 150, 200, 250],
+      "area": 50000,
+      "iscrowd": 0
+    }
+  ],
+  "categories": [
+    {
+      "id": 1,
+      "name": "person",
+      "supercategory": "human"
+    }
+  ]
+}
+#+END_SRC
+
+** Bbox Format
+- LTWH format: [left, top, width, height]
+- Absolute pixel coordinates (not normalized)
+
+** Advantages
+- Rich metadata support
+- Hierarchical categories (supercategory support)
+- Multiple annotation types (bbox, segmentation, keypoints)
+- Single file for entire dataset
+- Industry standard for benchmarks
+- Supports image attributes and licensing info
+
+** Disadvantages
+- Large file size for big datasets
+- More complex parsing
+- Requires all data in single file
+- Not human-friendly for manual editing
+
+** Use Cases
+- Large-scale datasets (MS COCO, etc.)
+- Benchmarking and competitions
+- Complex annotation requirements
+- Research publications
+- When metadata is important
+
+* Pascal VOC Format
+
+** Structure
+- XML file per image
+- Verbose, hierarchical structure
+- Includes image metadata
+
+** Format
+#+BEGIN_SRC xml
+<annotation>
+  <folder>images</folder>
+  <filename>image001.jpg</filename>
+  <size>
+    <width>640</width>
+    <height>480</height>
+    <depth>3</depth>
+  </size>
+  <object>
+    <name>person</name>
+    <bndbox>
+      <xmin>100</xmin>
+      <ymin>150</ymin>
+      <xmax>300</xmax>
+      <ymax>400</ymax>
+    </bndbox>
+    <difficult>0</difficult>
+    <truncated>0</truncated>
+  </object>
+</annotation>
+#+END_SRC
+
+** Bbox Format
+- XYXY format: xmin, ymin, xmax, ymax
+- Absolute pixel coordinates
+
+** Advantages
+- Self-contained (includes image dimensions)
+- Human-readable
+- Supports difficulty and truncation flags
+- One file per image (easy to manage)
+- Mature format with wide tool support
+
+** Disadvantages
+- Verbose (large file sizes)
+- Slow XML parsing
+- No native support in modern frameworks
+- Outdated compared to JSON formats
+
+** Use Cases
+- Legacy datasets
+- Projects requiring XML
+- When human readability is priority
+- Academic projects using older tools
+
+* LabelMe Format
+
+** Structure
+- JSON file per image
+- Supports polygons, not just bboxes
+- Flexible annotation types
+
+** Format
+#+BEGIN_SRC json
+{
+  "version": "4.5.6",
+  "flags": {},
+  "shapes": [
+    {
+      "label": "person",
+      "points": [
+        [100, 150],
+        [300, 150],
+        [300, 400],
+        [100, 400]
+      ],
+      "shape_type": "polygon",
+      "flags": {}
+    }
+  ],
+  "imagePath": "image001.jpg",
+  "imageHeight": 480,
+  "imageWidth": 640
+}
+#+END_SRC
+
+** Bbox Representation
+- Stored as 4-point polygon
+- Can represent rotated boxes
+- Flexible coordinate system
+
+** Advantages
+- Supports complex shapes (polygons, lines, points)
+- One file per image
+- Includes image metadata
+- Active tool ecosystem (LabelMe, Labelbox)
+- Flexible annotation attributes
+
+** Disadvantages
+- Overkill for simple bboxes
+- Requires conversion for most frameworks
+- Less standardized than COCO
+- Larger file size than YOLO
+
+** Use Cases
+- Semantic segmentation
+- Instance segmentation
+- Polygon annotations
+- When bbox rotation is needed
+- Multi-type annotation projects
+
+* TFRecord Format
+
+** Structure
+- Binary format for TensorFlow
+- Protocol Buffers serialization
+- Efficient for large-scale training
+
+** Format
+- Binary representation of Example protocol buffers
+- Supports any data structure
+- Optimized for TensorFlow data pipelines
+
+** Advantages
+- Extremely fast I/O
+- Compressed storage
+- Direct TensorFlow integration
+- Supports any data structure
+- Efficient for distributed training
+
+** Disadvantages
+- Not human-readable
+- Requires TensorFlow to parse
+- Complex to create manually
+- Debugging is difficult
+- Lock-in to TensorFlow ecosystem
+
+** Use Cases
+- Large-scale TensorFlow training
+- Production ML pipelines
+- When I/O is bottleneck
+- Cloud-based training
+
+* Conversion Between Formats
+
+** YOLO to COCO
+
+#+BEGIN_SRC python
+def yolo_to_coco(yolo_dir, output_json, img_dir, class_names):
+    """Convert YOLO format to COCO JSON."""
+    import json
+    from pathlib import Path
+    import cv2
+
+    coco = {
+        "images": [],
+        "annotations": [],
+        "categories": []
+    }
+
+    # Add categories
+    for i, name in enumerate(class_names):
+        coco["categories"].append({
+            "id": i,
+            "name": name,
+            "supercategory": "object"
+        })
+
+    annotation_id = 1
+    for img_id, label_file in enumerate(Path(yolo_dir).glob("*.txt"), 1):
+        img_file = Path(img_dir) / f"{label_file.stem}.jpg"
+        img = cv2.imread(str(img_file))
+        h, w = img.shape[:2]
+
+        coco["images"].append({
+            "id": img_id,
+            "file_name": img_file.name,
+            "width": w,
+            "height": h
+        })
+
+        with open(label_file) as f:
+            for line in f:
+                class_id, x_c, y_c, width, height = map(float, line.split())
+
+                # Convert from YOLO to COCO format
+                x_c *= w
+                y_c *= h
+                width *= w
+                height *= h
+
+                x = x_c - width / 2
+                y = y_c - height / 2
+
+                coco["annotations"].append({
+                    "id": annotation_id,
+                    "image_id": img_id,
+                    "category_id": int(class_id),
+                    "bbox": [x, y, width, height],
+                    "area": width * height,
+                    "iscrowd": 0
+                })
+                annotation_id += 1
+
+    with open(output_json, 'w') as f:
+        json.dump(coco, f, indent=2)
+#+END_SRC
+
+** Pascal VOC to YOLO
+
+#+BEGIN_SRC python
+def voc_to_yolo(voc_xml, output_txt):
+    """Convert Pascal VOC XML to YOLO txt."""
+    import xml.etree.ElementTree as ET
+
+    tree = ET.parse(voc_xml)
+    root = tree.getroot()
+
+    size = root.find('size')
+    width = int(size.find('width').text)
+    height = int(size.find('height').text)
+
+    with open(output_txt, 'w') as f:
+        for obj in root.findall('object'):
+            class_name = obj.find('name').text
+            class_id = class_name_to_id(class_name)  # Your mapping
+
+            bbox = obj.find('bndbox')
+            xmin = int(bbox.find('xmin').text)
+            ymin = int(bbox.find('ymin').text)
+            xmax = int(bbox.find('xmax').text)
+            ymax = int(bbox.find('ymax').text)
+
+            # Convert to YOLO format
+            x_center = ((xmin + xmax) / 2.0) / width
+            y_center = ((ymin + ymax) / 2.0) / height
+            w = (xmax - xmin) / width
+            h = (ymax - ymin) / height
+
+            f.write(f"{class_id} {x_center} {y_center} {w} {h}\n")
+#+END_SRC
+
+* Format Selection Guide
+
+** Choose YOLO Format When:
+- Training YOLO models
+- Simple bounding box annotations
+- Storage efficiency is important
+- Fast parsing is required
+- Working with normalized coordinates
+
+** Choose COCO Format When:
+- Large-scale datasets
+- Need rich metadata
+- Multiple annotation types
+- Benchmarking/competitions
+- Sharing with research community
+
+** Choose Pascal VOC When:
+- Working with legacy datasets
+- XML is required
+- Need human-readable format
+- Using older detection frameworks
+
+** Choose LabelMe When:
+- Need polygon annotations
+- Semantic/instance segmentation
+- Flexible shape support
+- Using LabelMe or Labelbox tools
+
+** Choose TFRecord When:
+- TensorFlow-based training
+- Very large datasets
+- I/O performance critical
+- Production ML pipelines
+
+* CV-Project Current Usage
+
+The CV-Project currently uses:
+
+- *Runtime*: No annotation files (inference-only)
+- *Model*: YOLOv8x-OIV7 (pre-trained on Open Images v7)
+- *Future training*: Will use YOLO format
+
+*Recommendation*: Use YOLO format for any future custom training, as it integrates directly with YOLOv8 training pipeline.
+
+* Related Notes
+
+- [[id:20251016200100][YOLO Label Format]] - Detailed YOLO format specification
+- [[id:20251016200000][Bounding Box Formats]] - Coordinate representations
+- [[id:20251016200400][CVAT YOLO Integration]] - Exporting YOLO from CVAT
+- [[id:20251016200200][CVAT Annotation Workflow]] - Annotation process
+- [[id:20251016200900][Annotation Tools Comparison]] - Tool support for formats
+- [[id:20251016201000][Annotation and Training MOC]] - Central annotation hub

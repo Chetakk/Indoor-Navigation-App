@@ -1,0 +1,419 @@
+:PROPERTIES:
+:ID:       20251015130700-non_maximum_suppression
+:ROAM_ALIASES: "NMS" "Non-Max Suppression" "Duplicate Removal"
+:END:
+#+title: Non-Maximum Suppression (NMS)
+#+filetags: :nms:post_processing:object_detection:algorithm:
+
+* Core Problem
+
+Object detectors produce multiple overlapping predictions for same object.
+Need to select best prediction and suppress duplicates.
+
+Example:
+```
+Same car detected by:
+- Grid cell (5,3) - confidence 0.92
+- Grid cell (5,4) - confidence 0.87
+- Grid cell (6,3) - confidence 0.75
+```
+NMS keeps only highest confidence (0.92), suppresses others.
+
+* Algorithm (Classic NMS)
+
+** Input
+- List of bounding box predictions
+- Each box: (x1, y1, x2, y2, confidence, class)
+- IoU threshold (e.g., 0.45)
+
+** Steps
+```
+1. Sort all boxes by confidence (descending)
+2. Initialize empty list for kept boxes
+3. While boxes remain:
+   a. Take highest confidence box B
+   b. Add B to kept boxes
+   c. Remove B from remaining boxes
+   d. For each remaining box R:
+      - If IoU(B, R) > threshold:
+        - Remove R (it's a duplicate)
+4. Return kept boxes
+```
+
+** Pseudocode
+```python
+def nms(boxes, iou_threshold):
+    # boxes: list of [x1, y1, x2, y2, confidence, class]
+
+    # Sort by confidence
+    boxes = sorted(boxes, key=lambda x: x[4], reverse=True)
+
+    kept = []
+    while len(boxes) > 0:
+        # Take highest confidence
+        best = boxes[0]
+        kept.append(best)
+
+        # Filter overlapping boxes
+        boxes = [box for box in boxes[1:]
+                 if iou(best, box) <= iou_threshold]
+
+    return kept
+```
+
+** Complexity
+- Time: O(N^2) in worst case
+  - N boxes initially
+  - Each kept box compares with remaining
+- Space: O(N) for kept boxes
+- Vectorized implementations much faster
+
+* Per-Class NMS
+
+** Why Per-Class?
+Same object may be multiple classes:
+- Box overlaps but different classes
+- Not duplicates (multi-label possible)
+
+** Multi-Class NMS
+```python
+def multi_class_nms(boxes, iou_threshold):
+    # boxes: [x1, y1, x2, y2, confidence, class_id]
+
+    kept = []
+    # Group by class
+    for class_id in unique_classes:
+        class_boxes = [b for b in boxes if b[5] == class_id]
+        # NMS per class
+        class_kept = nms(class_boxes, iou_threshold)
+        kept.extend(class_kept)
+
+    return kept
+```
+
+** Trade-off
+- More accurate (preserves multi-class)
+- Slightly slower (multiple NMS passes)
+- Standard in modern detectors
+
+* IoU Threshold Selection
+
+** Low Threshold (e.g., 0.3)
+- Aggressive suppression
+- Fewer duplicates
+- Risk: Suppress nearby distinct objects
+- Higher precision, lower recall
+
+** High Threshold (e.g., 0.6)
+- Lenient suppression
+- More duplicates remain
+- Better for dense scenes
+- Lower precision, higher recall
+
+** Common Values
+- YOLO default: 0.45
+- COCO evaluation: 0.5
+- Dense crowds: 0.6-0.7
+- Sparse scenes: 0.3-0.4
+
+** Dataset-Specific Tuning
+Depends on:
+- Object density
+- Occlusion frequency
+- Overlap tolerance
+- Speed requirements
+
+* NMS Variants
+
+** 1. Soft-NMS
+Problem: Hard NMS completely removes boxes
+Solution: Decay confidence instead of removing
+
+```python
+def soft_nms(boxes, iou_threshold, sigma=0.5):
+    # Linear decay
+    for b in boxes:
+        if iou(best, b) > iou_threshold:
+            b.confidence *= (1 - iou(best, b))
+
+    # Or Gaussian decay
+    for b in boxes:
+        b.confidence *= exp(-(iou(best, b)^2 / sigma))
+
+    # Remove only very low confidence
+    boxes = [b for b in boxes if b.confidence > 0.001]
+```
+
+Benefits:
+- Better for occluded objects
+- Nearby objects not completely removed
+- 1-2% mAP improvement on COCO
+
+** 2. DIoU-NMS
+Uses Distance-IoU instead of IoU
+
+```python
+def diou_nms(boxes, threshold):
+    # DIoU considers center distance
+    diou = iou(best, b) - (center_dist^2 / diagonal^2)
+    if diou > threshold:
+        remove b
+```
+
+Benefits:
+- Better handling of overlapping objects
+- Considers spatial relationship
+- Useful for dense scenes
+
+** 3. Weighted NMS
+Merge overlapping boxes instead of suppressing
+
+```python
+def weighted_nms(boxes, iou_threshold):
+    # Average coordinates weighted by confidence
+    similar_boxes = [b for b in boxes if iou(best, b) > threshold]
+    weights = [b.confidence for b in similar_boxes]
+
+    merged_box = weighted_average(similar_boxes, weights)
+    return merged_box
+```
+
+Benefits:
+- More accurate localization
+- Combines information from multiple predictions
+
+** 4. Adaptive NMS
+Adjust threshold based on object density
+
+```python
+def adaptive_nms(boxes, density_map):
+    for box in boxes:
+        local_density = density_map[box.center]
+        # Lower threshold in dense regions
+        threshold = base_threshold * (1 - local_density)
+        apply_nms(box, threshold)
+```
+
+Benefits:
+- Optimal suppression per region
+- Better for mixed density scenes
+
+* NMS-Free Approaches
+
+Modern methods eliminate NMS entirely:
+
+** 1. DETR (Detection Transformer)
+- Set prediction with Hungarian matching
+- Each query predicts unique object
+- No duplicate predictions by design
+
+** 2. One-to-One Assignment
+- During training, each object assigned to single prediction
+- Network learns not to produce duplicates
+- YOLOX, FCOS variants
+
+** 3. End-to-End Detection
+- NMS as learnable layer
+- Differentiable NMS approximations
+- Joint optimization with network
+
+Trade-offs:
+- Simpler pipeline
+- End-to-end training
+- Sometimes lower accuracy (DETR)
+- Slower convergence
+
+* Computational Optimization
+
+** Naive Implementation: O(N^2)
+```python
+for i, box_i in enumerate(boxes):
+    for j, box_j in enumerate(boxes[i+1:]):
+        if iou(box_i, box_j) > threshold:
+            mark_j_for_removal
+```
+
+** Vectorized Implementation
+```python
+import numpy as np
+
+def vectorized_nms(boxes, iou_threshold):
+    # boxes: [N, 5] (x1, y1, x2, y2, confidence)
+
+    # Sort by confidence
+    order = boxes[:, 4].argsort()[::-1]
+
+    keep = []
+    while order.size > 0:
+        i = order[0]
+        keep.append(i)
+
+        # Vectorized IoU computation
+        ious = compute_iou_vectorized(boxes[i], boxes[order[1:]])
+
+        # Keep boxes with IoU <= threshold
+        order = order[1:][ious <= iou_threshold]
+
+    return boxes[keep]
+```
+
+** GPU Acceleration
+- CUDA kernels for IoU computation
+- Parallel box comparisons
+- 10-100x speedup
+- Standard in PyTorch/TensorFlow
+
+** Spatial Hashing
+Pre-filter candidates:
+```python
+# Only compare boxes in nearby grid cells
+spatial_hash = partition_boxes_to_grid(boxes)
+for cell in spatial_hash:
+    nms_on_cell_and_neighbors(cell)
+```
+
+Reduces comparisons, especially for large images
+
+* NMS in YOLO Pipeline
+
+** Position in Pipeline
+```
+Image Input
+    |
+    v
+YOLO Network
+    |
+    v
+Raw Predictions (10,000+ boxes)
+    |
+    v
+Confidence Threshold (filter to ~100-1000)
+    |
+    v
+Non-Maximum Suppression (reduce to ~10-100)
+    |
+    v
+Final Detections
+```
+
+** Implementation (YOLOv5 style)
+```python
+def yolo_postprocess(predictions, conf_threshold=0.25, iou_threshold=0.45):
+    # predictions: [batch, num_boxes, 85]
+    # 85 = 4 coords + 1 obj + 80 classes
+
+    # 1. Confidence thresholding
+    mask = predictions[..., 4] > conf_threshold
+    predictions = predictions[mask]
+
+    # 2. Compute class confidence
+    class_conf = predictions[:, 5:] * predictions[:, 4:5]
+    class_id = class_conf.argmax(dim=1)
+
+    # 3. Per-class NMS
+    detections = []
+    for cls in unique_classes:
+        cls_mask = class_id == cls
+        cls_boxes = predictions[cls_mask]
+
+        # NMS for this class
+        keep = nms(cls_boxes[:, :5], iou_threshold)
+        detections.extend(cls_boxes[keep])
+
+    return detections
+```
+
+* NMS Parameters in Practice
+
+** Confidence Threshold
+Affects input to NMS:
+- 0.001: Very lenient (slow, many boxes to NMS)
+- 0.25: Standard YOLO (balanced)
+- 0.5: Strict (fast, may miss objects)
+
+** IoU Threshold
+Affects suppression aggressiveness:
+- 0.3: Aggressive (clean output, risk nearby objects)
+- 0.45: Standard YOLO (balanced)
+- 0.6: Lenient (more duplicates, dense scenes)
+
+** Max Detections
+Limit output size:
+- Keep top-K by confidence
+- Prevents excessive detections
+- Typical: 100-300 max
+- Saves memory, speeds up downstream
+
+* Failure Cases
+
+** Dense Crowds
+Multiple people very close:
+- High IoU between distinct people
+- NMS may suppress valid detections
+- Solution: Higher threshold or Soft-NMS
+
+** Occlusion
+Overlapping objects (person behind person):
+- Hard to distinguish if duplicate or distinct
+- Solution: Soft-NMS, better features
+
+** Multi-Scale Objects
+Large and small object overlapping:
+- May have high IoU but different
+- Solution: Per-scale NMS, adaptive threshold
+
+** Extreme Aspect Ratios
+Long thin objects (poles, pencils):
+- IoU poorly represents overlap
+- Solution: DIoU-NMS, aspect ratio consideration
+
+* Evaluation Impact
+
+** mAP Calculation
+NMS threshold affects metrics:
+- Standard evaluation uses specific threshold (0.5)
+- Different threshold changes mAP
+- Report NMS parameters for reproducibility
+
+** Speed-Accuracy Trade-off
+- Strict confidence threshold: Faster NMS, lower recall
+- Lenient IoU threshold: Slower NMS, more duplicates
+- Optimize for target deployment
+
+* Debugging NMS
+
+** Visualization
+```python
+# Before NMS
+visualize_boxes(predictions, color='red')  # 1000+ boxes
+
+# After NMS
+visualize_boxes(final_detections, color='green')  # 10-100 boxes
+```
+
+** Analysis
+- Count boxes before/after
+- Histogram of suppressed box confidences
+- Check for missed detections
+- Verify duplicate removal
+
+** Common Issues
+- Too many duplicates: Lower IoU threshold
+- Missing objects: Raise IoU threshold or use Soft-NMS
+- Slow inference: Stricter confidence threshold
+- Wrong class: Check per-class NMS
+
+* Related Concepts
+
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+
+* Footnotes
+
+[fn:1] NMS is essential post-processing step for all region-based and grid-based detectors
+
+[fn:2] Soft-NMS typically provides 1-2% mAP improvement with minimal speed cost
+
+[fn:3] Modern transformers (DETR) eliminate NMS but with trade-offs in speed and simplicity

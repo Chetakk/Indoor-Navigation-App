@@ -1,0 +1,45 @@
+# Flask Web Framework
+Flask
+Flask-CORS
+
+# Computer Vision and Image Processing
+opencv-python
+Pillow
+
+# YOLO Object Detection with GPU Support
+ultralytics
+
+# PyTorch with CUDA support (for GPU acceleration)
+# For CPU only: torch torchvision
+# For GPU (CUDA 11.8): Install from https://pytorch.org/get-started/locally/
+# Example: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+torch
+torchvision
+
+# Object Tracking
+deep-sort-realtime
+filterpy
+
+# Scientific Computing
+numpy
+scipy
+
+# Optional: For enhanced logging and monitoring
+python-dotenv
+
+# Development dependencies (optional - uncomment if needed)
+# pytest
+# pytest-flask
+# black
+# flake8
+
+# GPU Performance Notes:
+# =====================
+# For NVIDIA GPU acceleration:
+# 1. Install CUDA Toolkit 11.8 or 12.1 from NVIDIA
+# 2. Install cuDNN library
+# 3. Install PyTorch with CUDA support:
+#    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+# 4. Verify GPU: python -c "import torch; print(torch.cuda.is_available())"
+#
+# Expected speedup with GPU: 5-10x faster inference for real-time navigation

@@ -1,0 +1,90 @@
+:PROPERTIES:
+:ID:       20251015112300-detect_image
+:ROAM_REFS: [[file:../app/routes/detection.py::def detect_image]]
+:END:
+#+title: detect_image() Function
+#+filetags: :function:detection:api:endpoint:
+
+* Function Signature
+
+#+begin_src python
+@bp.route('/detect_image', methods=['POST'])
+def detect_image():
+    """Process image and return detection results with tracking."""
+    # ...
+#+end_src
+
+Location: app/routes/detection.py:34
+
+* Description
+
+Primary detection endpoint that orchestrates the entire detection pipeline.
+Receives base64-encoded images, applies rotation correction, runs YOLO inference,
+updates tracking, predicts collisions, and returns enriched detection data.
+
+* Parameters
+
+** Request Body (JSON)
+- image :: str (required) - Base64-encoded image with data URI
+- tracking_enabled :: bool (optional, default=True) - Enable tracking
+- orientation :: dict (optional) - Gyroscope/device orientation data
+
+* Returns
+
+JSON object with:
+- success :: bool
+- detections :: list[dict] - Detection objects with tracking/collision data
+- image_size :: [int, int]
+- tracking_enabled :: bool
+- collision_warnings :: int
+- processing_time_ms :: float
+
+* Pipeline Steps
+
+1. [[id:20251015113000-session_management][Session Management]] - Create/retrieve session ID
+2. [[id:20251015113100-image_decoding][Image Decoding]] - Decode base64 to numpy array
+3. [[id:20251015113200-rotation_correction][Rotation Correction]] - Apply gyroscope-based rotation
+4. [[id:20251015113300-image_optimization][Image Optimization]] - Resize for inference
+5. [[id:20251015112400-yolo_detect][YOLO Detection]] - Run object detection
+6. [[id:20251015113400-detection_filtering][Detection Filtering]] - Blacklist, normalize, deduplicate
+7. [[id:20251015112500-update_tracks][Object Tracking]] - Update DeepSORT tracks
+8. [[id:20251015113500-movement_analysis][Movement Analysis]] - Calculate velocity/direction
+9. [[id:20251015112600-predict_collision][Collision Prediction]] - Predict collision risks
+10. [[id:20251015113600-response_assembly][Response Assembly]] - Build JSON response
+
+* Related Notes
+
+** Uses
+- [[id:20251015112400-yolo_detect][YOLODetector.detect()]]
+- [[id:20251015112500-update_tracks][update_tracks()]]
+- [[id:20251015112600-predict_collision][predict_collision()]]
+- [[id:20251015113700-is_class_blacklisted][is_class_blacklisted()]]
+- [[id:20251015113800-normalize_class_name][normalize_class_name()]]
+- [[id:20251015113900-deduplicate_detections][deduplicate_same_class_detections()]]
+
+** Called By
+- [[id:20251015114000-camera_module_startrealtimeanalysis][startRealtimeAnalysis()]] - Frontend camera module
+
+** Part Of
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+- [[id:20251015111200-data_flow_moc][Data Flow MOC]]
+
+* Performance
+
+Typical timing (CPU mode):
+- Total: 550-2100ms per frame
+- Bottleneck: YOLO inference (500-2000ms)
+
+See [[id:20251015112200-performance_moc][Performance MOC]] for optimization strategies.
+
+* Error Handling
+
+Returns 500 with error details on exception:
+#+begin_src json
+{
+  "error": "error message",
+  "error_type": "ExceptionType",
+  "success": false,
+  "processing_time_ms": 123.4
+}
+#+end_src

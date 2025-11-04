@@ -1,0 +1,129 @@
+:PROPERTIES:
+:ID:       20251015114700-deepsort_algorithm
+:ROAM_ALIASES: "DeepSORT" "Deep SORT" "Multi-Object Tracking"
+:END:
+#+title: DeepSORT Algorithm
+#+filetags: :algorithm:tracking:deepsort:
+
+* Overview
+
+DeepSORT (Deep Learning + Simple Online Realtime Tracking) is a multi-object
+tracking algorithm that assigns persistent IDs to detected objects across frames.
+
+* Key Concept
+
+Combines:
+1. Motion prediction (Kalman filter)
+2. Appearance matching (Deep learning embeddings)
+3. Optimal assignment (Hungarian algorithm)
+
+* Algorithm Steps
+
+** 1. Prediction Phase
+Use [[id:20251015114800-kalman_filter][Kalman Filter]] to predict object positions in current frame:
+#+begin_src python
+for track in tracks:
+    track.predict()  # Predict new position
+#+end_src
+
+** 2. Feature Extraction
+Extract appearance features using [[id:20251015115000-mobilenet_embedder][MobileNet]] embedder:
+#+begin_src python
+for detection in detections:
+    feature = embedder.extract(detection.bbox, frame)
+    detection.feature = feature
+#+end_src
+
+** 3. Association
+Match detections to tracks using:
+- [[id:20251015119000-cosine_distance][Cosine Distance]] for appearance similarity
+- [[id:20251015119100-mahalanobis_distance][Mahalanobis Distance]] for motion consistency
+
+Combined distance:
+#+begin_src python
+distance = lambda_motion * motion_dist + lambda_appearance * appearance_dist
+#+end_src
+
+** 4. Assignment
+Use [[id:20251015114900-hungarian_algorithm][Hungarian Algorithm]] to find optimal matches:
+#+begin_src python
+matches, unmatched_detections, unmatched_tracks = assign(
+    detections, tracks, distance_matrix
+)
+#+end_src
+
+** 5. Update
+- Matched tracks: Update with detection
+- Unmatched detections: Create new tentative tracks
+- Unmatched tracks: Increment age, delete if age > MAX_TRACKER_AGE
+
+** 6. Track Management
+Tracks have states:
+- Tentative :: New track, needs MIN_TRACK_INIT consecutive matches
+- Confirmed :: Validated track, reported to user
+- Deleted :: Lost for MAX_TRACKER_AGE frames
+
+See [[id:20251015114600-deepsort_track_states][DeepSORT Track States]]
+
+* Parameters
+
+From [[id:20251015115400-constants_tracking][Tracking Constants]]:
+- MAX_TRACKER_AGE = 10 :: Frames to keep without detection
+- MIN_TRACK_INIT = 2 :: Consecutive matches to confirm
+- MAX_COSINE_DISTANCE = 0.25 :: Appearance similarity threshold
+- NN_BUDGET = 100 :: Max appearance descriptors per track
+
+* Advantages
+
+- Persistent IDs across occlusion
+- Robust to appearance changes
+- Re-identification after disappearance
+- Real-time performance
+
+* Limitations
+
+- Requires good appearance features
+- Struggles with identical-looking objects
+- Computational cost of feature extraction
+- May lose tracks in crowded scenes
+
+See [[id:20251015119200-deepsort_limitations][DeepSORT Limitations]]
+
+* Implementation
+
+Uses deep_sort_realtime library:
+#+begin_src python
+from deep_sort_realtime.deepsort_tracker import DeepSort
+
+tracker = DeepSort(
+    max_age=10,
+    n_init=2,
+    nms_max_overlap=0.7,
+    max_cosine_distance=0.25,
+    nn_budget=100,
+    embedder="mobilenet",
+    half=True,
+    embedder_gpu=True
+)
+#+end_src
+
+* Related Notes
+
+** Used In
+- [[id:20251015112500-update_tracks][update_tracks()]]
+- [[id:20251015112900-object_tracking_manager_class][ObjectTrackingManager]]
+
+** Uses
+- [[id:20251015114800-kalman_filter][Kalman Filter]]
+- [[id:20251015114900-hungarian_algorithm][Hungarian Algorithm]]
+- [[id:20251015115000-mobilenet_embedder][MobileNet Embedder]]
+- [[id:20251015119000-cosine_distance][Cosine Distance]]
+
+** Part Of
+- [[id:20251015111400-tracking_service_moc][Tracking Service MOC]]
+- [[id:20251015112000-algorithms_moc][Algorithms MOC]]
+
+* References
+
+Paper: Simple Online and Realtime Tracking with a Deep Association Metric
+Authors: Wojke et al., 2017

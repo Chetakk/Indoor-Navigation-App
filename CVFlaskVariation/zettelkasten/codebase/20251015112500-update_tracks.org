@@ -1,0 +1,107 @@
+:PROPERTIES:
+:ID:       20251015112500-update_tracks
+:ROAM_REFS: [[file:../app/services/object_tracker.py::def update_tracks]]
+:END:
+#+title: update_tracks() Method
+#+filetags: :function:tracking:deepsort:
+
+* Method Signature
+
+#+begin_src python
+def update_tracks(self, session_id, detections, frame):
+    """Update tracks for a session with new detections."""
+    # ...
+#+end_src
+
+Location: app/services/object_tracker.py:56
+
+* Description
+
+Updates DeepSORT tracker with new detections from current frame.
+Maintains persistent object IDs across frames and filters to confirmed tracks.
+
+* Parameters
+
+- session_id :: str - Unique session identifier
+- detections :: list[tuple] - List of (bbox_ltwh, confidence, class_name)
+- frame :: np.ndarray - Current frame image in BGR format
+
+* Returns
+
+list[Track] - Confirmed track objects with attributes:
+- track_id :: int - Unique persistent ID
+- det_class :: str - Object class name
+- det_conf :: float - Detection confidence
+- ltrb :: list[float] - Bounding box [left, top, right, bottom]
+
+* Algorithm
+
+1. Get or create tracker for session:
+   #+begin_src python
+   tracker = self.get_tracker(session_id)
+   #+end_src
+
+2. Update tracker with detections:
+   #+begin_src python
+   tracks = tracker.update_tracks(detections, frame=frame)
+   #+end_src
+
+3. Filter to confirmed tracks only:
+   #+begin_src python
+   confirmed_tracks = [t for t in tracks if t.is_confirmed()]
+   #+end_src
+
+4. Update trajectory histories:
+   #+begin_src python
+   for track in confirmed_tracks:
+       center_x = (ltrb[0] + ltrb[2]) / 2
+       center_y = (ltrb[1] + ltrb[3]) / 2
+       track_key = f"{session_id}_{track_id}"
+       self.track_histories[track_key].append((center_x, center_y))
+   #+end_src
+
+5. Return confirmed tracks
+
+* Track States
+
+See [[id:20251015114600-deepsort_track_states][DeepSORT Track States]]:
+- Tentative :: New detection, not yet confirmed
+- Confirmed :: MIN_TRACK_INIT consecutive matches (2 frames)
+- Deleted :: No match for MAX_TRACKER_AGE frames (10 frames)
+
+* Related Notes
+
+** Part Of
+- [[id:20251015112900-object_tracking_manager_class][ObjectTrackingManager Class]]
+- [[id:20251015111400-tracking_service_moc][Tracking Service MOC]]
+
+** Called By
+- [[id:20251015112300-detect_image][detect_image()]]
+
+** Uses
+- [[id:20251015114700-deepsort_algorithm][DeepSORT Algorithm]]
+- [[id:20251015114800-kalman_filter][Kalman Filter]] (motion prediction)
+- [[id:20251015114900-hungarian_algorithm][Hungarian Algorithm]] (assignment)
+- [[id:20251015115000-mobilenet_embedder][MobileNet Embedder]] (appearance features)
+
+** Related Functions
+- [[id:20251015115100-get_tracker][get_tracker()]] - Get/create tracker
+- [[id:20251015115200-get_track_history][get_track_history()]] - Get trajectory
+- [[id:20251015115300-reset_session][reset_session()]] - Clear tracking data
+
+* Parameters From Constants
+
+From [[id:20251015115400-constants_tracking][Tracking Constants]]:
+- MAX_TRACKER_AGE = 10 :: Frames without detection before deletion
+- MIN_TRACK_INIT = 2 :: Consecutive detections to confirm
+- MAX_COSINE_DISTANCE = 0.25 :: Appearance matching threshold
+- NMS_MAX_OVERLAP = 0.7 :: NMS threshold
+- NN_BUDGET = 100 :: Max appearance descriptors
+
+* Performance
+
+- Adds ~20-50ms to detection pipeline
+- GPU accelerated if available (MobileNet embedder)
+- Scales linearly with number of objects
+
+See [[id:20251015115500-tracking_performance][Tracking Performance Analysis]]

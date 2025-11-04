@@ -1,0 +1,477 @@
+:PROPERTIES:
+:ID:       20251015130900-yolo_loss_function
+:ROAM_ALIASES: "YOLO Loss" "Detection Loss" "Training Loss"
+:END:
+#+title: YOLO Loss Function
+#+filetags: :yolo:loss_function:training:optimization:
+
+* Core Concept
+
+YOLO loss function is a multi-part loss that simultaneously optimizes localization (bounding box coordinates), objectness (confidence), and classification.
+
+Key Principle: Composite loss balances multiple objectives with weighting factors.
+
+* Loss Components
+
+Multi-task loss consists of three parts:
+1. Localization Loss (box coordinates)
+2. Objectness Loss (confidence score)
+3. Classification Loss (class probabilities)
+
+```
+Total Loss = lambda_coord * L_box
+           + lambda_obj * L_obj
+           + lambda_noobj * L_noobj
+           + lambda_cls * L_cls
+```
+
+* 1. Localization Loss (Box Coordinates)
+
+Penalizes errors in bounding box prediction.
+
+** YOLOv1 Approach (Sum of Squared Errors)
+```
+L_box = sum over responsible cells and boxes:
+        (x_pred - x_true)^2
+      + (y_pred - y_true)^2
+      + (sqrt(w_pred) - sqrt(w_true))^2
+      + (sqrt(h_pred) - sqrt(h_true))^2
+```
+
+Square root for width/height:
+- Small boxes: Errors matter more
+- Large boxes: Less sensitive to absolute error
+- Provides scale invariance
+
+Problems:
+- Still not fully scale invariant
+- Square root hack is ad-hoc
+- Not directly optimizing IoU
+
+** Modern Approach (IoU-Based Loss)
+
+*** IoU Loss
+```
+L_IoU = 1 - IoU(pred_box, true_box)
+```
+
+Benefits:
+- Directly optimizes evaluation metric
+- Naturally scale invariant
+- Better convergence
+
+Problem:
+- No gradient when boxes don't overlap
+- IoU = 0 gives no learning signal
+
+*** GIoU Loss (Generalized IoU)
+```
+GIoU = IoU - (Area_C - Union) / Area_C
+L_GIoU = 1 - GIoU
+```
+- C: Smallest enclosing box
+- Range: [-1, 1]
+- Provides gradient even without overlap
+
+*** DIoU Loss (Distance IoU)
+```
+DIoU = IoU - (d^2 / c^2)
+L_DIoU = 1 - DIoU
+```
+- d: Distance between box centers
+- c: Diagonal of enclosing box
+- Directly minimizes center distance
+- Faster convergence than GIoU
+
+*** CIoU Loss (Complete IoU) - State-of-Art
+```
+CIoU = IoU - (d^2 / c^2) - alpha * v
+v = (4/pi^2) * (arctan(w_gt/h_gt) - arctan(w_pred/h_pred))^2
+alpha = v / ((1 - IoU) + v)
+
+L_CIoU = 1 - CIoU
+```
+
+Considers:
+- Overlap (IoU)
+- Center distance
+- Aspect ratio consistency
+
+Benefits:
+- Best localization accuracy
+- Comprehensive geometric properties
+- Current YOLO standard
+
+** Application
+Only applied to responsible predictions:
+- Cell containing object center
+- Best matching anchor
+- Positive samples only
+
+** Weighting
+```
+lambda_coord = 5.0 (YOLOv1-v3)
+```
+Higher weight emphasizes localization:
+- Localization harder than classification
+- More important for quality
+- Balances against numerous negative samples
+
+* 2. Objectness Loss (Confidence)
+
+Penalizes errors in objectness prediction.
+
+** Two Cases
+
+*** 2a. Object Present (Positive Samples)
+```
+L_obj = sum over responsible predictions:
+        (confidence_pred - IoU(pred, truth))^2
+```
+
+Target: IoU between prediction and ground truth
+- Perfect prediction (IoU=1) -> confidence=1
+- Imperfect localization -> confidence proportional
+
+*** 2b. No Object (Negative Samples)
+```
+L_noobj = sum over non-responsible predictions:
+          (confidence_pred - 0)^2
+```
+
+Target: 0 (no object)
+- Should predict low confidence
+- Most predictions are negative
+- Crucial for reducing false positives
+
+** Loss Function Type
+
+*** YOLOv1-v2: Mean Squared Error (MSE)
+```
+L = (pred - target)^2
+```
+Simple but not optimal
+
+*** YOLOv3+: Binary Cross-Entropy (BCE)
+```
+L = -target * log(pred) - (1-target) * log(1-pred)
+```
+
+Benefits:
+- Better for binary classification
+- Stronger gradients
+- More stable training
+
+*** Modern: Focal Loss (Optional)
+```
+L = -alpha * (1-p_t)^gamma * log(p_t)
+```
+- gamma: Focusing parameter (typically 2.0)
+- alpha: Balancing factor
+- Downweights easy examples
+- Focuses on hard negatives
+
+** Class Imbalance Problem
+Negative samples >> Positive samples:
+- Typical: 10,000+ predictions per image
+- Only 5-50 objects
+- Ratio: 100:1 or more
+
+Solutions:
+1. Lower weight for negatives (lambda_noobj = 0.5)
+2. Focal loss (automatic hard example mining)
+3. Online hard example mining (select hardest negatives)
+4. Balance positive/negative in batch
+
+** Weighting
+```
+lambda_obj = 1.0
+lambda_noobj = 0.5 (YOLOv1-v3)
+```
+Lower weight for negatives due to imbalance
+
+* 3. Classification Loss
+
+Penalizes errors in class prediction.
+
+** Single-Label (YOLOv1-v3)
+```
+L_cls = sum over cells with objects:
+        sum over classes:
+        (p_pred(class) - p_true(class))^2
+```
+
+One-hot encoding:
+- True class: target = 1
+- Other classes: target = 0
+
+** Multi-Label (YOLOv3+)
+Binary Cross-Entropy per class:
+```
+L_cls = -sum over classes:
+        [y_c * log(p_c) + (1-y_c) * log(1-p_c)]
+```
+
+Benefits:
+- Allows multiple labels per box
+- Example: "person" and "rider"
+- More flexible
+
+** Softmax vs Sigmoid
+
+*** Softmax (Mutually Exclusive)
+- Classes mutually exclusive
+- sum(probabilities) = 1
+- Used in YOLOv1-v2
+
+*** Sigmoid (Independent)
+- Each class independent
+- Multi-label possible
+- Used in YOLOv3+
+- Better for overlapping categories
+
+** Application
+Only applied to cells with objects:
+- Responsible predictions only
+- No classification loss for background
+
+** Weighting
+```
+lambda_cls = 1.0 (standard)
+```
+Equal weight with objectness
+
+* Complete Loss Formulation
+
+** YOLOv1 Original
+```
+Loss = lambda_coord * sum[i=0 to S^2] sum[j=0 to B] 1_ij^obj [
+         (x_i - x_i_hat)^2 + (y_i - y_i_hat)^2
+       ]
+     + lambda_coord * sum[i=0 to S^2] sum[j=0 to B] 1_ij^obj [
+         (sqrt(w_i) - sqrt(w_i_hat))^2 + (sqrt(h_i) - sqrt(h_i_hat))^2
+       ]
+     + sum[i=0 to S^2] sum[j=0 to B] 1_ij^obj [
+         (C_i - C_i_hat)^2
+       ]
+     + lambda_noobj * sum[i=0 to S^2] sum[j=0 to B] 1_ij^noobj [
+         (C_i - C_i_hat)^2
+       ]
+     + sum[i=0 to S^2] 1_i^obj sum[c in classes] [
+         (p_i(c) - p_i_hat(c))^2
+       ]
+```
+
+Where:
+- 1_ij^obj: Indicator (1 if object in cell i, box j responsible)
+- 1_ij^noobj: Indicator (1 if no object)
+- S: Grid size
+- B: Boxes per cell
+
+** YOLOv3+ Modern
+```
+Loss = lambda_coord * sum[positive samples] L_CIoU(pred, true)
+     + lambda_obj * sum[positive samples] BCE(conf_pred, IoU)
+     + lambda_noobj * sum[negative samples] BCE(conf_pred, 0)
+     + lambda_cls * sum[positive samples] BCE(class_pred, class_true)
+```
+
+* Hyperparameter Selection
+
+** Lambda Weights (Typical Values)
+
+*** lambda_coord: 5.0
+- Emphasizes localization
+- Counterbalances class imbalance
+- Critical for tight boxes
+
+*** lambda_obj: 1.0
+- Standard weight
+- Balanced with classification
+
+*** lambda_noobj: 0.5
+- Reduced due to many negatives
+- Prevents overwhelming loss
+- May reduce to 0.05 for extreme imbalance
+
+*** lambda_cls: 1.0
+- Equal with objectness
+- Standard setting
+
+** Tuning Guidelines
+Adjust based on:
+- Dataset characteristics
+- Object density
+- Class distribution
+- Evaluation metric priorities
+
+Increase lambda_coord if:
+- Poor localization (low IoU)
+- mAP@0.75 much lower than mAP@0.5
+
+Decrease lambda_noobj if:
+- Too many false positives
+- Confidence too high on background
+
+* Loss Balancing Strategies
+
+** 1. Manual Weights
+Hand-tune lambda values:
+- Standard starting point
+- Dataset-specific tuning
+- Requires experimentation
+
+** 2. Adaptive Weights
+Automatically adjust during training:
+```python
+lambda_coord = base_weight * (cls_loss / coord_loss).detach()
+```
+Balance loss magnitudes
+
+** 3. Focal Loss
+Automatic hard example mining:
+- Focus on difficult samples
+- Reduce easy negatives
+- Self-balancing
+
+** 4. OHEM (Online Hard Example Mining)
+Select hardest samples:
+- Sort by loss
+- Keep top-K hardest
+- Ignore easy negatives
+
+** 5. Gradient Harmonizing (GHM)
+Balance gradient contributions:
+- Harmonize gradient magnitudes
+- Prevent domination by easy/hard extremes
+
+* Training Dynamics
+
+** Early Training
+- High loss (random initialization)
+- Box loss dominates
+- Poor localization and classification
+
+** Mid Training
+- Loss decreases steadily
+- Localization improves
+- Classification becomes accurate
+
+** Late Training
+- Loss plateaus
+- Fine-tuning localization
+- Reducing false positives
+
+** Overfitting Signs
+- Training loss decreases
+- Validation loss increases
+- Reduce learning rate or add regularization
+
+* Loss Monitoring
+
+** Key Metrics to Track
+```
+Total Loss: Combined loss
+Box Loss: Localization quality
+Obj Loss: Objectness accuracy
+NoObj Loss: Background handling
+Class Loss: Classification accuracy
+```
+
+** Desired Trends
+- All losses should decrease
+- Box loss: Most important for quality
+- NoObj loss: Should be small (many easy negatives)
+- Convergence: Losses plateau
+
+** Warning Signs
+- Box loss not decreasing: Learning rate too low, bad anchors
+- NoObj loss exploding: Too many false positives
+- Class loss stuck: Hard classes, need more data
+- Total loss NaN: Learning rate too high, numerical instability
+
+* Advanced Loss Functions
+
+** 1. Quality Focal Loss (QFL)
+Joint quality-classification:
+- Combines quality (IoU) and classification
+- Better confidence calibration
+
+** 2. Distribution Focal Loss (DFL)
+Learn distribution of box coordinates:
+- Predict probability distribution
+- More robust localization
+
+** 3. Varifocal Loss
+Asymmetric focal loss:
+- Treat positive/negative differently
+- Better for dense prediction
+
+** 4. Task-Aligned Losses
+Align classification and localization quality:
+- High IoU <-> High class confidence
+- Used in TOOD, recent YOLO variants
+
+* Practical Implementation Tips
+
+** Numerical Stability
+- Clip predictions to valid range
+- Add epsilon to logarithms
+- Check for NaN/Inf during training
+
+** Gradient Clipping
+```python
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+```
+Prevents exploding gradients
+
+** Loss Weighting Schedule
+Adjust weights during training:
+```python
+# Warm-up localization weight
+lambda_coord = 5.0 * min(1.0, epoch / warmup_epochs)
+```
+
+** Mixed Precision Training
+Use FP16 for speed:
+- Scale loss to prevent underflow
+- Automatic with PyTorch AMP
+
+** Distributed Training
+Average loss across GPUs:
+- Sync gradients properly
+- Consider batch size effects on normalization
+
+* Debugging Loss Issues
+
+** Loss Not Decreasing
+1. Check learning rate (too low?)
+2. Verify data augmentation (too aggressive?)
+3. Check anchor sizes (appropriate?)
+4. Inspect ground truth annotations (correct?)
+
+** Loss Exploding
+1. Reduce learning rate
+2. Enable gradient clipping
+3. Check for corrupted data
+4. Reduce batch size
+
+** One Component Stuck
+1. Box loss stuck: Check anchors, increase lambda_coord
+2. Obj loss stuck: Adjust threshold, use focal loss
+3. Class loss stuck: Check labels, balance classes
+
+* Related Concepts
+
+- [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+
+* Footnotes
+
+[fn:1] CIoU loss is current state-of-art for localization in YOLO family
+
+[fn:2] Loss weighting significantly impacts final performance - dataset-specific tuning recommended
+
+[fn:3] Focal loss addresses extreme class imbalance automatically without manual tuning

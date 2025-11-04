@@ -1,0 +1,345 @@
+:PROPERTIES:
+:ID:       20251015130500-anchor_boxes
+:ROAM_ALIASES: "Anchors" "Prior Boxes" "Default Boxes"
+:END:
+#+title: Anchor Boxes in Object Detection
+#+filetags: :anchor_boxes:object_detection:priors:yolo:
+
+* Core Concept
+
+Anchor boxes (priors) are pre-defined bounding boxes with specific scales and aspect ratios used as references for prediction.
+
+Key Idea: Instead of predicting absolute coordinates, predict offsets from anchors that approximate object distributions.
+
+* Why Anchor Boxes?
+
+** Problems Without Anchors (YOLOv1)
+- Each grid cell predicts arbitrary boxes
+- Hard to learn from scratch
+- Struggles with extreme aspect ratios
+- Limited to 2 boxes per cell
+- Cannot handle multiple similar-sized objects well
+
+** Benefits of Anchors
+- Better initialization (start near solution)
+- Explicit handling of multiple scales
+- Explicit handling of different aspect ratios
+- Faster convergence
+- Prior knowledge about dataset encoded
+
+** Historical Introduction
+- Faster R-CNN (2015): Region Proposal Network
+- YOLOv2 (2016): Adopted anchors from RPN
+- SSD (2016): Multiple scales at different layers
+
+* Anchor Box Design
+
+** Dimensions
+Each anchor defined by:
+- Width (w)
+- Height (h)
+- Aspect ratio (r = w/h)
+- Scale (area or size)
+
+** Typical Configurations
+
+*** YOLOv2
+5 anchors per cell (learned via clustering):
+- (0.57273, 0.677385)
+- (1.87446, 2.06253)
+- (3.33843, 5.47434)
+- (7.88282, 3.52778)
+- (9.77052, 9.16828)
+
+*** YOLOv3
+3 anchors per scale (9 total):
+- Small grid (13x13): Large objects
+  - (116,90), (156,198), (373,326)
+- Medium grid (26x26): Medium objects
+  - (30,61), (62,45), (59,119)
+- Large grid (52x52): Small objects
+  - (10,13), (16,30), (33,23)
+
+*** Common Aspect Ratios
+- 1:1 (square objects)
+- 1:2, 2:1 (moderate rectangles)
+- 1:3, 3:1 (extreme rectangles)
+- Determined by dataset characteristics
+
+* Anchor Generation Methods
+
+** 1. Manual Design
+Hand-crafted based on domain knowledge:
+- Common object shapes in dataset
+- Expected size ranges
+- Aspect ratio distribution
+
+Drawbacks:
+- Suboptimal for specific datasets
+- Requires expertise
+- May miss important configurations
+
+** 2. K-Means Clustering (YOLOv2 Approach)
+Cluster ground truth boxes:
+```
+1. Collect all ground truth boxes from dataset
+2. Apply k-means clustering on (width, height)
+3. Use cluster centers as anchors
+4. Distance metric: 1 - IoU (not Euclidean)
+```
+
+Distance metric:
+```
+d(box, centroid) = 1 - IoU(box, centroid)
+```
+
+Why IoU distance?
+- Euclidean favors large boxes
+- IoU considers overlap (relevant metric)
+- Better reflects detection task
+
+Optimal K selection:
+- Trade-off between coverage and complexity
+- YOLOv2: K=5 (good balance)
+- Analyze recall vs K curve
+
+** 3. Evolutionary Algorithms
+Optimize anchors using genetic algorithms:
+- Fitness function: mAP or recall
+- Iteratively evolve anchor configurations
+- Computationally expensive but effective
+
+** 4. Neural Architecture Search (NAS)
+Learn anchors as part of architecture search:
+- Joint optimization with network
+- Automated but very expensive
+
+* Anchor Matching Strategy
+
+** During Training
+For each ground truth box:
+
+*** 1. Compute IoU
+Calculate IoU with all anchors at responsible cell
+
+*** 2. Best Match
+Assign to anchor with highest IoU
+
+*** 3. Thresholds
+- Positive: IoU > 0.5 (responsible for detection)
+- Negative: IoU < 0.4 (background)
+- Ignore: 0.4 <= IoU <= 0.5 (not penalized)
+
+*** 4. One-to-One Assignment
+Each ground truth assigned to one anchor:
+- Prevents duplicate losses
+- Ensures clear responsibility
+
+** YOLO-Specific Matching
+YOLOv3+ uses strict matching:
+- Ground truth assigned to single anchor (best IoU)
+- Other anchors not penalized for this object
+- Encourages specialization
+
+* Anchor-Based Prediction
+
+** Network Output
+For each anchor at each location:
+- tx, ty: Center offsets
+- tw, th: Dimension adjustments
+- confidence: Objectness score
+- class_probs: Class probabilities
+
+** Decoding Predictions
+Transform network outputs to boxes:
+```
+bx = sigmoid(tx) + cx
+by = sigmoid(ty) + cy
+bw = pw * exp(tw)
+bh = ph * exp(th)
+```
+- (cx, cy): Grid cell coordinates
+- (pw, ph): Anchor dimensions
+- See [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+
+** Interpretation
+- Anchors provide scale/aspect ratio prior
+- Network learns small adjustments
+- tx, ty: Where within cell?
+- tw, th: How much to scale anchor?
+
+* Multi-Scale Anchors (Modern YOLO)
+
+** Scale Assignment
+Different anchor sizes at different feature map scales:
+
+*** Large Feature Map (52x52)
+- Small anchors
+- Detect small objects
+- Fine spatial resolution
+
+*** Medium Feature Map (26x26)
+- Medium anchors
+- Detect medium objects
+- Balanced resolution
+
+*** Small Feature Map (13x13)
+- Large anchors
+- Detect large objects
+- Coarse spatial resolution
+
+** Rationale
+- Match anchor size to feature map scale
+- Appropriate receptive field for object size
+- Better specialization
+- See [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+
+* Anchor Box Limitations
+
+** Fixed Aspect Ratios
+- May not cover all object types
+- Unusual shapes poorly represented
+- Dataset-specific optimization needed
+
+** Hyperparameter Sensitivity
+- Number of anchors
+- Scales and ratios
+- Assignment thresholds
+- Requires tuning for each dataset
+
+** Computational Overhead
+- More anchors = more predictions
+- Increased computation and memory
+- Diminishing returns beyond certain point
+
+** Training Imbalance
+- Many negative anchors (background)
+- Few positive anchors (objects)
+- Requires careful loss balancing
+- Focal loss addresses this
+
+* Anchor-Free Alternatives
+
+Modern approaches eliminate anchors:
+
+** FCOS (2019)
+- Per-pixel prediction
+- Direct distance to box edges
+- Centerness for quality estimation
+
+** CenterNet (2019)
+- Detect object centers (keypoints)
+- Regress width and height
+- No anchors or NMS
+
+** YOLOX (2021)
+- Anchor-free YOLO
+- SimOTA assignment
+- Competitive with anchor-based
+
+** Trade-offs
+Anchor-free advantages:
+- Fewer hyperparameters
+- Simpler design
+- Better generalization
+
+Anchor-based advantages:
+- Proven performance
+- Well-understood behavior
+- Easier multi-scale handling (debatable)
+
+* Anchor Optimization Techniques
+
+** Aspect Ratio Selection
+Analyze dataset:
+```python
+ratios = []
+for box in ground_truths:
+    ratios.append(box.width / box.height)
+histogram(ratios)  # Identify common ratios
+```
+
+** Scale Distribution
+Match anchor scales to object size distribution:
+- Small objects: More small anchors
+- Large objects: More large anchors
+- Proportional to frequency
+
+** Iterative Refinement
+1. Train with initial anchors
+2. Analyze false negatives (missed objects)
+3. Adjust anchors to cover missed cases
+4. Retrain and evaluate
+
+** Per-Dataset Optimization
+Don't use default anchors:
+- COCO anchors suboptimal for custom data
+- Always cluster or analyze your dataset
+- 10-20% mAP improvement possible
+
+* Implementation Details
+
+** Anchor Tensor Structure
+Shape: [num_anchors, 2]
+```python
+anchors = [
+    [width_1, height_1],
+    [width_2, height_2],
+    ...
+]
+```
+
+** Broadcasting
+Anchors broadcast across spatial dimensions:
+- Same anchors at every grid cell
+- Different anchors per scale
+- Total predictions: S*S*num_anchors
+
+** Coordinate Normalization
+Anchors typically normalized:
+- Relative to grid cell: [0, grid_size]
+- Relative to image: [0, 1]
+- Absolute pixels: [0, image_size]
+Consistent units critical for correct decoding
+
+* Practical Guidelines
+
+** Number of Anchors
+- Too few: Poor coverage, missed detections
+- Too many: Computational cost, redundancy
+- Sweet spot: 3-5 per scale
+- Total: 9-15 across all scales
+
+** Clustering Recommendations
+- Use entire training set
+- Weight by object frequency (optional)
+- Choose K based on recall@IoU curve
+- Validate on validation set
+
+** Anchor Analysis Tools
+Check anchor quality:
+```
+Recall = (Objects matched to anchor) / (Total objects)
+```
+Target: >95% recall with anchors
+
+** When to Recalculate
+- New dataset
+- Significant domain shift
+- Different image resolution
+- After major architecture changes
+
+* Related Concepts
+
+- [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+- [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+
+* Footnotes
+
+[fn:1] K-means with IoU distance converges to anchors that maximize average IoU with ground truth
+
+[fn:2] YOLOv2 showed 5% mAP improvement with clustered anchors over hand-picked
+
+[fn:3] Anchor-free methods increasingly competitive but anchors remain standard in YOLO family

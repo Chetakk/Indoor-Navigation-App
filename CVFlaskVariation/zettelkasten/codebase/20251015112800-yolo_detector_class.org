@@ -1,0 +1,114 @@
+:PROPERTIES:
+:ID:       20251015112800-yolo_detector_class
+:ROAM_REFS: [[file:../app/services/yolo_detector.py::class YOLODetector]]
+:END:
+#+title: YOLODetector Class
+#+filetags: :class:yolo:detection:singleton:
+
+* Class Definition
+
+#+begin_src python
+class YOLODetector:
+    """Manages YOLO model loading and inference."""
+
+    def __init__(self, model_path='yolov8n-oiv7.pt', force_cpu=True):
+        # ...
+#+end_src
+
+Location: app/services/yolo_detector.py:17
+
+* Description
+
+Singleton class that manages YOLO11 model lifecycle and provides
+object detection capabilities. Handles GPU/CPU detection and device management.
+
+* Attributes
+
+- model_path :: str - Path to YOLO weights file
+- device :: str - 'cuda' or 'cpu'
+- model :: YOLO - Ultralytics YOLO model instance
+
+* Methods
+
+All methods documented as separate notes:
+- [[id:20251015118400-load_model][_load_model()]] - Initialize model
+- [[id:20251015112400-yolo_detect][detect()]] - Run inference
+- [[id:20251015118500-get_class_names][get_class_names()]] - Get class mapping
+- [[id:20251015118600-get_model_info][get_model_info()]] - Get model metadata
+
+* Singleton Pattern
+
+Global instance prevents multiple model loads:
+#+begin_src python
+_detector = None
+
+def get_detector(model_path='yolov8x-oiv7.pt', force_cpu=True):
+    global _detector
+    if _detector is None:
+        _detector = YOLODetector(model_path, force_cpu)
+    return _detector
+#+end_src
+
+See [[id:20251015118300-get_detector][get_detector()]]
+
+* Why Singleton?
+
+- Model load is expensive (~2-5 seconds)
+- Model uses 500MB-2GB memory
+- Single model can handle multiple concurrent requests
+- Prevents GPU memory fragmentation
+
+* Device Selection
+
+#+begin_src python
+self.device = 'cpu' if force_cpu else (
+    'cuda' if torch.cuda.is_available() else 'cpu'
+)
+#+end_src
+
+Priority:
+1. If force_cpu=True → CPU
+2. Else if CUDA available → GPU
+3. Else → CPU
+
+See [[id:20251015114500-device_management][Device Management]]
+
+* Memory Usage
+
+** Model Weights
+- yolov8n: ~6MB
+- yolov8s: ~22MB
+- yolov8m: ~52MB
+- yolov8l: ~88MB
+- yolov8x: ~136MB (current)
+
+** GPU VRAM (During Inference)
+- Batch size 1: ~2-4GB
+- Depends on input size
+
+** CPU RAM
+- ~500MB-1GB
+
+* Thread Safety
+
+Model inference is thread-safe in PyTorch.
+Flask runs with threading=True, so multiple requests can use same model.
+
+* Related Notes
+
+** Part Of
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+
+** Used By
+- [[id:20251015112300-detect_image][detect_image()]]
+- [[id:20251015120000-model_routes][Model Routes]]
+
+** Uses
+- [[id:20251015114300-ultralytics_yolo][Ultralytics YOLO]]
+- [[id:20251015120100-pytorch][PyTorch]]
+
+* Configuration
+
+Configured via [[id:20251015120200-config_class][Config Class]]:
+- MODEL_PATH environment variable
+- FORCE_CPU environment variable

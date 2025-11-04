@@ -1,0 +1,385 @@
+#+TITLE: Annotation Tools Comparison
+#+DATE: 2025-10-16 20:09
+#+TAGS: :annotation: :tools: :comparison:
+#+ID: 20251016200900
+
+:PROPERTIES:
+:ID:       20251016200900
+:ROAM_ALIASES: "Labeling Tools" "Annotation Software" "Tool Selection"
+:END:
+
+* Overview
+
+Comparison of popular annotation tools for object detection, with focus on suitability for the CV-Project indoor navigation use case.
+
+* Tool Comparison Matrix
+
+| Tool       | Type       | Cost | Format Support | Best For                 |
+|------------|------------|------|----------------|--------------------------|
+| CVAT       | Web        | Free | YOLO,COCO,VOC  | Teams, complex projects  |
+| LabelImg   | Desktop    | Free | YOLO,VOC,JSON  | Simple, single-user      |
+| Roboflow   | Cloud      | Paid | All            | End-to-end pipeline      |
+| VIA        | Web/Local  | Free | JSON           | Academic, lightweight    |
+| Labelbox   | Cloud      | Paid | All            | Enterprise teams         |
+| Label Studio | Web/Self | Free | All            | Flexible workflows       |
+
+* CVAT (Computer Vision Annotation Tool)
+
+** Overview
+
+- *Developer*: Intel
+- *Type*: Web-based
+- *License*: MIT (open source)
+- *URL*: https://app.cvat.ai (cloud) or self-hosted
+
+** Pros
+
+- Professional-grade features
+- Multiple annotation types (bbox, polygon, segmentation, etc.)
+- Team collaboration built-in
+- Version control for annotations
+- AI-assisted annotation
+- Active development and community
+- Export to YOLO, COCO, Pascal VOC, TFRecord
+- Video annotation support
+- Quality control workflow
+- Keyboard shortcuts for efficiency
+
+** Cons
+
+- Learning curve for beginners
+- Requires internet for cloud version
+- Self-hosting requires Docker setup
+- Can be heavy for small projects
+
+** Use Cases
+
+- Medium to large annotation projects
+- Team collaboration needed
+- Multiple annotation types
+- Quality control important
+- Video annotation
+
+** CV-Project Recommendation
+
+*RECOMMENDED* - Best fit for CV-Project because:
+- Direct YOLO format export
+- Team-friendly if project scales
+- Quality control features
+- Free and open source
+- Active development
+
+See [[id:20251016200200][CVAT Annotation Workflow]] for usage guide.
+
+* LabelImg
+
+** Overview
+
+- *Developer*: Tzutalin
+- *Type*: Desktop application (Python/Qt)
+- *License*: MIT (open source)
+- *URL*: https://github.com/tzutalin/labelImg
+
+** Pros
+
+- Simple, intuitive interface
+- Lightweight and fast
+- Works offline
+- Direct YOLO and Pascal VOC export
+- No setup required (standalone executable)
+- Keyboard shortcuts
+- One image = one XML/TXT file (easy to manage)
+
+** Cons
+
+- Only bounding boxes (no polygons/segmentation)
+- Single-user only (no collaboration)
+- Limited automation features
+- No version control
+- Basic feature set
+- Less active development
+
+** Use Cases
+
+- Quick prototyping
+- Small datasets (<500 images)
+- Single annotator
+- Simple bounding box tasks
+- When simplicity is priority
+
+** CV-Project Suitability
+
+*ALTERNATIVE OPTION* - Good for:
+- Quick testing/prototyping
+- Personal annotation work
+- When CVAT is overkill
+
+* Roboflow
+
+** Overview
+
+- *Developer*: Roboflow Inc.
+- *Type*: Cloud platform
+- *License*: Proprietary (freemium)
+- *URL*: https://roboflow.com
+
+** Pros
+
+- End-to-end platform (annotate, augment, train, deploy)
+- Smart annotation suggestions
+- Automatic train/val/test split
+- Built-in augmentation pipeline
+- Model training integration
+- Dataset versioning
+- Health checks for datasets
+- Export to any format
+- Browser-based (no install)
+- Great documentation
+
+** Cons
+
+- *Paid service* (free tier limited)
+- Requires internet
+- Data stored on their servers (privacy concerns)
+- Vendor lock-in
+- Less control over pipeline
+
+** Use Cases
+
+- Rapid prototyping
+- When full pipeline needed quickly
+- Budget available
+- Don't want to manage infrastructure
+
+** CV-Project Suitability
+
+*NOT RECOMMENDED* - Because:
+- CV-Project has own augmentation/training pipeline
+- Free alternatives available (CVAT)
+- Prefer self-hosted/local tools
+- No need for their training features
+
+* VGG Image Annotator (VIA)
+
+** Overview
+
+- *Developer*: Oxford Visual Geometry Group
+- *Type*: Browser-based (works offline)
+- *License*: BSD (open source)
+- *URL*: https://www.robots.ox.ac.uk/~vgg/software/via/
+
+** Pros
+
+- Runs entirely in browser (no server needed)
+- Single HTML file (ultra portable)
+- Works completely offline
+- Free and open source
+- Support for various annotation types
+- No installation required
+- Lightweight
+
+## Cons
+
+- JSON export format (needs conversion for YOLO)
+- Basic UI compared to modern tools
+- Limited collaboration features
+- No AI assistance
+- Manual format conversion required
+
+** Use Cases
+
+- Academic research
+- Offline annotation required
+- Air-gapped environments
+- Minimal setup requirements
+- Small projects
+
+** CV-Project Suitability
+
+*NOT RECOMMENDED* - Because:
+- Requires format conversion to YOLO
+- Less efficient than CVAT
+- Limited features for workflow
+
+* Labelbox
+
+** Overview
+
+- *Developer*: Labelbox Inc.
+- *Type*: Cloud platform
+- *License*: Proprietary (enterprise)
+- *URL*: https://labelbox.com
+
+** Pros
+
+- Enterprise-grade platform
+- Advanced collaboration features
+- Quality assurance workflows
+- Custom ontology support
+- API access
+- Model-assisted labeling
+- Advanced analytics
+- Workforce management
+
+** Cons
+
+- *Expensive* (enterprise pricing)
+- Overkill for small projects
+- Cloud-only
+- Vendor lock-in
+
+** Use Cases
+
+- Large organizations
+- Complex annotation workflows
+- Need workforce management
+- Compliance requirements
+
+** CV-Project Suitability
+
+*NOT RECOMMENDED* - Overkill and expensive for project needs.
+
+* Label Studio
+
+** Overview
+
+- *Developer*: Heartex
+- *Type*: Web (self-hosted or cloud)
+- *License*: Apache 2.0 (open source)
+- *URL*: https://labelstud.io
+
+** Pros
+
+- Very flexible (supports many data types)
+- Custom annotation interfaces
+- Machine learning integration
+- Active development
+- Free and open source
+- Self-hosted or cloud
+- Python API
+
+** Cons
+
+- More complex setup than CVAT
+- Flexibility can be overwhelming
+- Focused on NLP as well (not purely CV)
+- Smaller CV community than CVAT
+
+** Use Cases
+
+- Multi-modal projects (text + images)
+- Custom annotation requirements
+- ML pipeline integration needed
+- Research projects
+
+** CV-Project Suitability
+
+*ALTERNATIVE OPTION* - Could work, but CVAT is more CV-focused.
+
+* Makesense.ai
+
+** Overview
+
+- *Type*: Browser-based
+- *License*: GPL (open source)
+- *URL*: https://www.makesense.ai
+
+** Pros
+
+- No registration required
+- Works entirely in browser
+- Privacy-friendly (data stays local)
+- YOLO export support
+- Free
+
+** Cons
+
+- Basic features
+- No collaboration
+- Limited scalability
+- Less polished than alternatives
+
+** CV-Project Suitability
+
+*ALTERNATIVE OPTION* - For quick, private annotation sessions.
+
+* Recommendation for CV-Project
+
+** Primary Tool: CVAT
+
+*Use CVAT for main annotation workflow*
+
+Reasons:
+1. Direct YOLO export (no conversion needed)
+2. Professional features at no cost
+3. Team collaboration if needed later
+4. Quality control workflows
+5. Active community support
+
+See [[id:20251016200200][CVAT Annotation Workflow]] for setup guide.
+
+** Backup Tool: LabelImg
+
+*Use LabelImg for quick tasks*
+
+Reasons:
+1. Fast setup
+2. Offline capability
+3. Good for small batches
+4. No account needed
+
+** Avoid
+
+- Roboflow (paid, unnecessary features)
+- Labelbox (expensive, enterprise-focused)
+- VIA (format conversion hassle)
+
+* Feature Requirements Checklist
+
+For CV-Project annotation needs:
+
+- [X] Bounding box support
+- [X] YOLO format export
+- [X] Free/open source
+- [X] Keyboard shortcuts for speed
+- [X] Works with 640x640 images
+- [X] Can handle 500-1000 image datasets
+- [ ] Team collaboration (nice to have)
+- [ ] Version control (nice to have)
+- [ ] AI-assisted annotation (nice to have)
+
+CVAT meets all required criteria and most nice-to-haves.
+
+* Integration with CV-Project Pipeline
+
+#+BEGIN_EXAMPLE
+Frame Extraction
+  (framer.py)
+       |
+       v
+  CVAT Annotation <-- Primary
+       | (or)
+  LabelImg <-- Alternative
+       |
+       v
+   YOLO Export
+       |
+       v
+  Enhancement
+  (enhancer.py)
+       |
+       v
+  Augmentation
+  (augScript.py)
+       |
+       v
+  YOLOv8 Training
+#+END_EXAMPLE
+
+* Related Notes
+
+- [[id:20251016190000][CVAT Overview]] - CVAT features and capabilities
+- [[id:20251016200200][CVAT Annotation Workflow]] - How to use CVAT
+- [[id:20251016200400][CVAT YOLO Integration]] - Export process
+- [[id:20251016200300][Annotation Formats Comparison]] - Format details
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

@@ -1,0 +1,347 @@
+:PROPERTIES:
+:ID:       20251015130300-object_detection_paradigms
+:ROAM_ALIASES: "Object Detection" "Detection Paradigms" "Detection Architectures"
+:END:
+#+title: Object Detection Paradigms
+#+filetags: :object_detection:computer_vision:architectures:
+
+* Core Problem
+
+Object Detection = Localization + Classification
+
+Given an image, find:
+1. Where objects are (bounding boxes)
+2. What they are (class labels)
+3. How confident we are (confidence scores)
+
+* Evolution of Approaches
+
+** Traditional Methods (Pre-Deep Learning)
+
+*** Sliding Window
+- Exhaustively scan image at multiple scales
+- Classify each window
+- Problems: Computationally expensive, fixed aspect ratios
+
+*** Viola-Jones (2001)
+- Haar features + AdaBoost
+- Cascade classifiers
+- Fast face detection
+- Limited to specific object types
+
+*** HOG + SVM (2005)
+- Histogram of Oriented Gradients features
+- Support Vector Machine classifier
+- Pedestrian detection
+- Hand-crafted features
+
+*** Deformable Part Models (DPM) (2008)
+- Model object as collection of parts
+- Spatial relations between parts
+- State-of-art before deep learning
+
+* Deep Learning Era
+
+** Two-Stage Detectors
+
+*** R-CNN (2014)
+Region-based CNN
+
+Process:
+1. Selective Search: ~2000 region proposals
+2. CNN feature extraction per region
+3. SVM classification
+4. Bounding box regression
+
+Limitations:
+- Very slow (forward pass per proposal)
+- Separate training stages
+- No end-to-end training
+
+*** Fast R-CNN (2015)
+Improvements:
+1. Single CNN forward pass for entire image
+2. RoI (Region of Interest) pooling
+3. Multi-task loss (classification + localization)
+4. End-to-end training (except proposals)
+
+Speed: ~10x faster than R-CNN
+
+*** Faster R-CNN (2015)
+Major innovation: Region Proposal Network (RPN)
+
+Architecture:
+1. CNN backbone extracts features
+2. RPN proposes regions (learned)
+3. RoI pooling
+4. Classification + Bounding box regression
+
+Fully end-to-end trainable
+Real-time capable: ~5-7 FPS
+
+*** R-FCN (2016)
+- Position-sensitive score maps
+- Fully convolutional (no FC layers)
+- Faster than Faster R-CNN
+
+*** Mask R-CNN (2017)
+- Extension of Faster R-CNN
+- Adds instance segmentation branch
+- Simultaneously detects and segments
+
+*** Cascade R-CNN (2018)
+- Multiple detection heads in sequence
+- Progressive refinement
+- Better localization quality
+
+** One-Stage Detectors
+
+Core idea: Direct prediction without region proposals
+
+*** YOLO (You Only Look Once) (2016)
+Revolutionary approach:
+- Single forward pass
+- Grid-based prediction
+- Extremely fast (45+ FPS)
+- See [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+
+Process:
+1. Divide image into grid
+2. Each cell predicts bounding boxes
+3. Direct classification
+
+Trade-off: Speed vs accuracy
+
+*** SSD (Single Shot MultiBox Detector) (2016)
+Innovations:
+- Multi-scale feature maps
+- Default boxes (similar to anchors)
+- Predictions at multiple resolutions
+
+Better than YOLO for small objects
+30-60 FPS
+
+*** RetinaNet (2017)
+Key contribution: Focal Loss
+
+Problem addressed:
+- Class imbalance (many background examples)
+- Focal loss downweights easy examples
+
+Architecture:
+- Feature Pyramid Network
+- Classification + Box regression subnets
+- Anchor-based
+
+Achieves two-stage accuracy at one-stage speed
+
+*** FCOS (2019)
+Fully Convolutional One-Stage
+- Anchor-free detection
+- Per-pixel prediction
+- Centerness score
+- Simpler than anchor-based methods
+
+*** YOLOF (2021)
+You Only Look One-level Feature
+- Single-level feature detection
+- Challenges necessity of FPN
+- Simpler architecture
+
+* Comparison: One-Stage vs Two-Stage
+
+** Two-Stage Detectors
+
+Advantages:
+- Higher accuracy (especially localization)
+- Better for small objects
+- More stable training
+
+Disadvantages:
+- Slower inference
+- More complex architecture
+- Harder to deploy
+
+Examples: Faster R-CNN, Cascade R-CNN, Mask R-CNN
+
+** One-Stage Detectors
+
+Advantages:
+- Fast inference (real-time)
+- Simpler architecture
+- Easier to deploy
+- Better for video processing
+
+Disadvantages:
+- Historically lower accuracy
+- Struggled with small objects
+- Class imbalance issues
+
+Examples: YOLO, SSD, RetinaNet
+
+Gap narrowing: Modern one-stage detectors (RetinaNet, YOLOv5+) achieve comparable accuracy
+
+* Transformer-Based Detectors
+
+** DETR (2020)
+Detection Transformer
+
+Revolutionary ideas:
+- No anchors
+- No NMS (Non-Maximum Suppression)
+- Set prediction problem
+- Bipartite matching loss
+
+Architecture:
+1. CNN backbone
+2. Transformer encoder-decoder
+3. Fixed-size set of predictions
+4. Hungarian matching for training
+
+Advantages:
+- Elegant formulation
+- No hand-crafted components
+
+Challenges:
+- Slow convergence
+- High computational cost
+- Poor for small objects
+
+** Deformable DETR (2020)
+- Deformable attention
+- Multi-scale features
+- Faster convergence
+- Better accuracy
+
+** Variants
+- Conditional DETR
+- DAB-DETR
+- DN-DETR
+All aimed at improving training and accuracy
+
+* Key Components Across Paradigms
+
+** 1. Backbone
+Feature extraction network
+- ResNet, VGG, EfficientNet, CSPDarknet
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+** 2. Neck
+Feature aggregation
+- FPN (Feature Pyramid Network)
+- PAN (Path Aggregation Network)
+- BiFPN (Bi-directional FPN)
+- See [[id:20251015130800-feature_pyramid_networks][Feature Pyramid Networks]]
+
+** 3. Head
+Prediction layer
+- Classification scores
+- Bounding box coordinates
+- Confidence/objectness
+
+** 4. Post-processing
+- NMS (Non-Maximum Suppression)
+- Confidence thresholding
+- See [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Anchor-Based vs Anchor-Free
+
+** Anchor-Based
+- Pre-defined boxes at each location
+- Multiple scales and aspect ratios
+- Predict offsets from anchors
+- See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+Examples: Faster R-CNN, YOLO (v2-v4), RetinaNet
+
+Challenges:
+- Hyperparameter tuning (scales, ratios)
+- Imbalanced training (many anchors)
+
+** Anchor-Free
+- Direct prediction of object presence
+- No pre-defined boxes
+- Per-pixel or per-point prediction
+
+Examples: FCOS, CenterNet, YOLOv1, YOLOX
+
+Advantages:
+- Fewer hyperparameters
+- Simpler
+- Better generalization
+
+* Performance Metrics
+
+** Speed Metrics
+- FPS (Frames Per Second)
+- Latency (milliseconds)
+- FLOPs (computational complexity)
+
+** Accuracy Metrics
+- mAP (mean Average Precision)
+- mAP@0.5 (IoU threshold 0.5)
+- mAP@0.5:0.95 (COCO metric)
+- Recall at various IoU thresholds
+
+** Trade-offs
+Speed-Accuracy curve:
+- Lightweight: YOLO-nano, MobileNet-SSD
+- Balanced: YOLOv5m, RetinaNet
+- Accurate: Cascade R-CNN, large models
+
+* Application Considerations
+
+** Real-time Requirements
+- Autonomous driving: One-stage (YOLO, SSD)
+- Video surveillance: One-stage
+- Edge devices: Lightweight one-stage
+
+** Accuracy Critical
+- Medical imaging: Two-stage
+- Fine-grained analysis: Two-stage or large one-stage
+
+** Resource Constraints
+- Mobile: MobileNet-based, YOLO-nano
+- Cloud: Any architecture
+- Edge: Optimized one-stage
+
+* Modern Trends
+
+** Neural Architecture Search (NAS)
+- Automated architecture design
+- EfficientDet, DetNAS
+
+** Attention Mechanisms
+- Self-attention in detectors
+- CBAM, SE blocks
+- Transformer-based
+
+** Unified Architectures
+- Handle multiple tasks
+- Detection + segmentation + pose
+- YOLACT, SOLOv2
+
+** Efficiency Optimization
+- Knowledge distillation
+- Pruning and quantization
+- Hardware-aware design
+
+** Self-Supervised Learning
+- Pre-training without labels
+- Better feature representations
+
+* Related Concepts
+
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Footnotes
+
+[fn:1] COCO benchmark: Common evaluation dataset with 80 object categories
+
+[fn:2] Modern detectors often hybrid: anchor-free heads on anchor-based frameworks
+
+[fn:3] Real-time defined as >30 FPS on standard hardware

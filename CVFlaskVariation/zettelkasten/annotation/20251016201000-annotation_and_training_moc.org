@@ -1,0 +1,414 @@
+#+TITLE: Annotation and Training MOC
+#+DATE: 2025-10-16 20:10
+#+TAGS: :moc: :annotation: :training:
+#+ID: 20251016201000
+
+:PROPERTIES:
+:ID:       20251016201000
+:ROAM_ALIASES: "Annotation MOC" "Training Pipeline MOC" "Dataset Creation MOC"
+:END:
+
+* Overview
+
+This Map of Content (MOC) serves as the central hub for all annotation, dataset creation, and model training topics in the CV-Project. Use this as your starting point for any annotation-related tasks.
+
+* Quick Reference
+
+** Current Status
+
+- *Model*: YOLOv8x-OIV7 (pre-trained, inference-only)
+- *Dataset*: Open Images v7 (600+ classes)
+- *Annotation*: Not yet implemented (future work)
+- *Training*: Not yet implemented (future work)
+
+** When You Need Custom Training
+
+Follow this pipeline:
+
+1. Extract frames -> [[id:20251016200800][Dataset Augmentation Strategies]] (framer.py)
+2. Annotate -> [[id:20251016200200][CVAT Annotation Workflow]]
+3. Export -> [[id:20251016200400][CVAT YOLO Integration]]
+4. Augment -> [[id:20251016200800][Dataset Augmentation Strategies]] (augScript.py)
+5. Train -> Use YOLOv8 CLI with [[id:20251016200500][Open Images v7 Dataset]] as base
+
+* Core Concepts
+
+** Bounding Boxes
+
+- [[id:20251016200000][Bounding Box Formats]]
+  - XYXY (corner format) - YOLO output
+  - XYWH (center format) - YOLO labels
+  - LTWH (left-top-width-height) - DeepSORT tracker
+  - Conversion functions between formats
+  - Normalization and denormalization
+
+- [[id:20251016200700][Bounding Box Coordinate Conversions]]
+  - Code examples from codebase
+  - app/routes/detection.py conversions
+  - Utility functions for all formats
+  - Batch conversion operations
+  - Validation and clipping
+
+** Label Formats
+
+- [[id:20251016200100][YOLO Label Format]]
+  - Text file structure (.txt)
+  - Normalized coordinates (0-1 range)
+  - One line per object
+  - Directory structure requirements
+  - data.yaml configuration
+  - Conversion utilities
+
+- [[id:20251016200300][Annotation Formats Comparison]]
+  - YOLO vs COCO vs Pascal VOC
+  - Format selection guide
+  - Conversion between formats
+  - Pros and cons of each
+  - When to use which format
+
+* Annotation Workflow
+
+** Tools
+
+- [[id:20251016200900][Annotation Tools Comparison]]
+  - CVAT (recommended)
+  - LabelImg (alternative)
+  - Roboflow, Labelbox, VIA (alternatives)
+  - Feature comparison matrix
+  - Cost analysis
+  - Suitability for CV-Project
+
+- [[id:20251016190000][CVAT Overview]]
+  - Features and capabilities
+  - Installation options
+  - Annotation types supported
+  - Team collaboration
+  - AI-assisted annotation
+
+** Process
+
+- [[id:20251016200200][CVAT Annotation Workflow]]
+  - Step-by-step guide
+  - Project setup
+  - Task creation
+  - Annotation interface
+  - Keyboard shortcuts
+  - Quality control
+  - Export process
+
+- [[id:20251016200600][Annotation Quality Guidelines]]
+  - Tightness standards
+  - Occlusion handling
+  - Truncation rules
+  - Class assignment conventions
+  - Consistency checks
+  - Common mistakes
+  - Validation tools
+
+* Dataset Preparation
+
+** Integration
+
+- [[id:20251016200400][CVAT YOLO Integration]]
+  - Export from CVAT
+  - Reorganize for YOLO training
+  - Create data.yaml
+  - Complete pipeline script
+  - Validation and testing
+  - Integration with augmentation
+
+** Augmentation
+
+- [[id:20251016200800][Dataset Augmentation Strategies]]
+  - augScript.py usage
+  - enhancer.py preprocessing
+  - framer.py frame extraction
+  - Complete workflow
+  - Best practices
+  - Augmentation parameters
+  - YOLOv8 built-in augmentation
+
+** Datasets
+
+- [[id:20251016200500][Open Images v7 Dataset]]
+  - 9M+ images, 600+ classes
+  - Current YOLOv8x-oiv7 model
+  - Class structure
+  - Filtering in CV-Project
+  - Fine-tuning potential
+  - Accessing the dataset
+  - Comparison to other datasets
+
+* Complete Workflow Diagram
+
+#+BEGIN_EXAMPLE
++------------------------+
+| DATASET CREATION       |
++------------------------+
+                |
+                v
+        +---------------+
+        | Video Files   |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | framer.py     | <-- utilities/framer.py
+        | Extract frames|
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Raw Frames    |
+        +-------+-------+
+                |
+                v (optional)
+        +---------------+
+        | enhancer.py   | <-- utilities/enhancer.py
+        | Improve       |
+        | quality       |
+        +-------+-------+
+                |
+                v
++------------------------+
+| ANNOTATION             |
++------------------------+
+                |
+                v
+        +---------------+
+        | CVAT          | <-- app.cvat.ai
+        | Annotate      |
+        | objects       |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Export YOLO   |
+        | format        |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Reorganize    | <-- cvat_to_yolo.py script
+        | dataset       |
+        +-------+-------+
+                |
+                v
++------------------------+
+| AUGMENTATION           |
++------------------------+
+                |
+                v
+        +---------------+
+        | augScript.py  | <-- utilities/augScript.py
+        | Apply         |
+        | transforms    |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Split train/  |
+        | val sets      |
+        +-------+-------+
+                |
+                v
++------------------------+
+| TRAINING               |
++------------------------+
+                |
+                v
+        +---------------+
+        | YOLOv8 Train  | <-- yolo train data=data.yaml
+        | Fine-tune     |     model=yolov8x-oiv7.pt
+        | model         |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Trained Model |
+        | best.pt       |
+        +-------+-------+
+                |
+                v
++------------------------+
+| DEPLOYMENT             |
++------------------------+
+                |
+                v
+        +---------------+
+        | Replace model | <-- app/services/yolo_detector.py
+        | in codebase   |
+        +-------+-------+
+                |
+                v
+        +---------------+
+        | Test on live  |
+        | detection     |
+        +---------------+
+#+END_EXAMPLE
+
+* File Locations
+
+** Codebase Files
+
+- Detection pipeline: =app/routes/detection.py=
+- YOLO detector: =app/services/yolo_detector.py=
+- Current model: =yolov8x-oiv7.pt= (root directory)
+- Dataset config: =data.yaml= (root directory)
+- Class filtering: =app/constants.py=, =app/utils/filtering.py=
+
+** Utility Scripts
+
+- Frame extraction: =utilities/framer.py=
+- Augmentation: =utilities/augScript.py=
+- Enhancement: =utilities/enhancer.py=
+
+** Zettelkasten Notes
+
+- Annotations: =zettelkasten/annotation/=
+- Codebase: =zettelkasten/codebase/=
+- YOLO: =zettelkasten/yolo/=
+
+* Quick Commands
+
+** Frame Extraction
+
+#+BEGIN_SRC bash
+python utilities/framer.py video.mp4 -o frames -r 640x640 -i 10
+#+END_SRC
+
+** Image Enhancement
+
+#+BEGIN_SRC bash
+python utilities/enhancer.py frames -o enhanced --preset yolo
+#+END_SRC
+
+** Dataset Augmentation
+
+#+BEGIN_SRC bash
+python utilities/augScript.py annotated_data output_dataset \
+    --augmentation_factor 5 --train_ratio 0.8
+#+END_SRC
+
+** YOLOv8 Training
+
+#+BEGIN_SRC bash
+# Fine-tune from OIV7 model
+yolo train data=dataset/data.yaml model=yolov8x-oiv7.pt epochs=50
+
+# Train from scratch
+yolo train data=dataset/data.yaml model=yolov8x.yaml epochs=100
+
+# Resume training
+yolo train resume model=runs/detect/train/weights/last.pt
+#+END_SRC
+
+** Validation
+
+#+BEGIN_SRC bash
+yolo val data=dataset/data.yaml model=runs/detect/train/weights/best.pt
+#+END_SRC
+
+** Inference
+
+#+BEGIN_SRC bash
+yolo predict model=runs/detect/train/weights/best.pt source=test_images/
+#+END_SRC
+
+* Related Codebase Notes
+
+** Detection System
+
+- [[id:20251015111300][Detection Service MOC]] - Detection pipeline overview
+- [[id:20251015130450][Bounding Box Predictions]] - YOLO predictions structure
+- [[id:20251015184500][Calculate Reactive Navigation]] - Using detections for navigation
+
+** Data Processing
+
+- [[id:20251015130450][Bounding Box Predictions]] - Detection output format
+- Class filtering and normalization (constants.py)
+
+* Future Work Checklist
+
+When implementing custom training:
+
+- [ ] Extract frames from indoor navigation videos
+- [ ] Set up CVAT project with indoor classes
+- [ ] Annotate 500-1000 images minimum
+- [ ] Apply quality control review
+- [ ] Export to YOLO format
+- [ ] Reorganize dataset structure
+- [ ] Apply augmentation (5-10x factor)
+- [ ] Create data.yaml with custom classes
+- [ ] Fine-tune from yolov8x-oiv7 weights
+- [ ] Validate on held-out test set
+- [ ] Compare performance to base model
+- [ ] Deploy if performance improves
+- [ ] Document new classes and thresholds
+
+* Quick Navigation
+
+** By Topic
+
+*Annotation*:
+- [[id:20251016200200][CVAT Annotation Workflow]]
+- [[id:20251016200600][Annotation Quality Guidelines]]
+- [[id:20251016200900][Annotation Tools Comparison]]
+
+*Formats*:
+- [[id:20251016200000][Bounding Box Formats]]
+- [[id:20251016200100][YOLO Label Format]]
+- [[id:20251016200300][Annotation Formats Comparison]]
+
+*Pipeline*:
+- [[id:20251016200400][CVAT YOLO Integration]]
+- [[id:20251016200800][Dataset Augmentation Strategies]]
+- [[id:20251016200500][Open Images v7 Dataset]]
+
+*Code*:
+- [[id:20251016200700][Bounding Box Coordinate Conversions]]
+- [[id:20251015111300][Detection Service MOC]]
+
+** By Task
+
+*"I need to annotate images"*:
+1. [[id:20251016200900][Annotation Tools Comparison]] - Choose tool
+2. [[id:20251016200200][CVAT Annotation Workflow]] - Learn process
+3. [[id:20251016200600][Annotation Quality Guidelines]] - Quality standards
+
+*"I have CVAT annotations, need to train"*:
+1. [[id:20251016200400][CVAT YOLO Integration]] - Export and reorganize
+2. [[id:20251016200800][Dataset Augmentation Strategies]] - Augment data
+3. Train with YOLOv8 CLI
+
+*"I need to understand bbox formats"*:
+1. [[id:20251016200000][Bounding Box Formats]] - Format specifications
+2. [[id:20251016200700][Bounding Box Coordinate Conversions]] - Conversion code
+3. [[id:20251016200100][YOLO Label Format]] - YOLO specifics
+
+*"I want to extract frames from video"*:
+1. [[id:20251016200800][Dataset Augmentation Strategies]] - See framer.py section
+2. Run: =python utilities/framer.py video.mp4 -o frames=
+
+*"I need to improve image quality"*:
+1. [[id:20251016200800][Dataset Augmentation Strategies]] - See enhancer.py section
+2. Run: =python utilities/enhancer.py input -o output --preset yolo=
+
+* Additional Resources
+
+** External Documentation
+
+- YOLO Docs: https://docs.ultralytics.com
+- CVAT Docs: https://opencv.github.io/cvat/docs/
+- Open Images: https://storage.googleapis.com/openimages/web/index.html
+
+** Papers
+
+- YOLOv8: https://github.com/ultralytics/ultralytics
+- CVAT: Intel's annotation tool
+- Open Images: Google Research
+
+* Version History
+
+- 2025-10-16: Initial MOC creation
+- Future: Update as annotation/training implemented

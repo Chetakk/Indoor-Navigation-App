@@ -1,0 +1,336 @@
+:PROPERTIES:
+:ID:       20251015184800-perspective_aware_movement
+:ROAM_REFS: [[file:../app/services/collision_detector.py::def analyze_movement]]
+:END:
+#+title: Perspective-Aware Movement Directions
+#+filetags: :concept:movement:perspective:camera:spatial_awareness:
+
+* Overview
+
+Movement direction detection that accounts for camera perspective, translating
+screen coordinates to human-understandable spatial directions.
+
+Key insight: "Up" in screen coordinates means "away from user" in real space.
+
+* The Problem
+
+** Screen Coordinates vs Real Space
+
+Screen coordinate system:
+- Origin (0, 0) at top-left
+- X increases to the right
+- Y increases downward
+- "Up" = toward top of screen (decreasing Y)
+- "Down" = toward bottom of screen (increasing Y)
+
+Camera perspective:
+- Bottom of frame = close to user
+- Top of frame = far from user
+- Object moving "up" in frame = moving AWAY from user
+- Object moving "down" in frame = moving CLOSER to user
+
+** User Confusion
+
+Original system said:
+- "Person moved up" - Jarring! What does "up" mean spatially?
+- "Car moving downward" - Confusing! Downward where?
+- "Dog changed direction, now moving upward" - Unclear!
+
+Users think in real-world spatial terms:
+- Closer/further (depth)
+- Left/right (lateral)
+- Toward me/away from me
+
+* Solution: Perspective-Aware Directions
+
+** Direction Mapping
+
+| Screen Direction | Angle Range  | Old Name     | New Name       | User Perception      |
+|------------------+--------------+--------------+----------------+----------------------|
+| Toward top       | -135 to -45  | moving_up    | moving_away    | Moving away from me  |
+| Toward bottom    | 45 to 135    | moving_down  | moving_closer  | Approaching me       |
+| Toward right     | -45 to 45    | moving_right | moving_right   | Moving to my right   |
+| Toward left      | 135 or < -135| moving_left  | moving_left    | Moving to my left    |
+
+** Implementation
+
+Backend (collision_detector.py):
+#+begin_src python
+# Calculate angle (0 = right, 90 = down, 180 = left, 270 = up)
+angle = np.degrees(np.arctan2(dy, dx))
+
+# Perspective-aware naming
+if displacement < STATIONARY_THRESHOLD:
+    direction = 'stationary'
+elif -45 <= angle < 45:
+    direction = 'moving_right'
+elif 45 <= angle < 135:
+    direction = 'moving_closer'  # Moving down in frame = toward user
+elif angle >= 135 or angle < -135:
+    direction = 'moving_left'
+else:
+    direction = 'moving_away'  # Moving up in frame = away from user
+#+end_src
+
+Frontend (detection.js):
+#+begin_src javascript
+const directionMap = {
+    'moving_right': 'moving right',
+    'moving_left': 'moving left',
+    'moving_away': 'moving away',
+    'moving_closer': 'approaching'
+};
+#+end_src
+
+* Angle Calculation
+
+** Coordinate System
+
+#+begin_example
+          -90deg (moving_away)
+               |
+               |
+-180/180  -----+----- 0deg (moving_right)
+(left)         |
+               |
+           90deg (moving_closer)
+#+end_example
+
+** Formula
+
+#+begin_src python
+angle = atan2(dy, dx)
+# dy = trajectory end Y - start Y (positive = downward in screen)
+# dx = trajectory end X - start X (positive = rightward in screen)
+#+end_src
+
+** Quadrants
+
+| Quadrant | Angle Range | dx  | dy  | Screen Dir    | Real Dir       |
+|----------+-------------+-----+-----+---------------+----------------|
+| I        | 0 to 90     | +   | +   | Right & Down  | Right & Closer |
+| II       | 90 to 180   | -   | +   | Left & Down   | Left & Closer  |
+| III      | -180 to -90 | -   | -   | Left & Up     | Left & Away    |
+| IV       | -90 to 0    | +   | -   | Right & Up    | Right & Away   |
+
+* Natural Language Mapping
+
+** Context-Specific Phrasing
+
+Different contexts use different natural language:
+
+*** Collision Warnings
+#+begin_src javascript
+'moving_away': 'moving away',
+'moving_closer': 'approaching'
+#+end_src
+
+Example: "Caution! car approaching at medium speed"
+
+*** Movement Started
+#+begin_src javascript
+'moving_away': 'away',
+'moving_closer': 'closer to you'
+#+end_src
+
+Example: "Person started moving away"
+
+*** Direction Change
+#+begin_src javascript
+'moving_away': 'away from you',
+'moving_closer': 'toward you'
+#+end_src
+
+Example: "Dog changed direction, now moving toward you"
+
+*** General Announcements
+#+begin_src javascript
+'moving_away': 'moving away',
+'moving_closer': 'approaching'
+#+end_src
+
+Example: "person at 2 meters left, approaching at slow speed"
+
+* Benefits
+
+** For Blind Users
+
+1. Immediate spatial understanding
+   - "Approaching" = need to react
+   - "Moving away" = less urgent
+
+2. Natural language matches mental model
+   - Think in 3D space, not screen coordinates
+   - "Toward me" vs abstract "downward"
+
+3. Better safety awareness
+   - "Approaching" clearly indicates potential collision
+   - "Moving away" indicates decreasing threat
+
+** For Sighted Users Testing
+
+Even sighted users found "moving up/down" confusing
+Perspective-aware directions intuitive for everyone
+
+* Example Scenarios
+
+** Scenario 1: Person Walking Away
+
+Screen: Person bbox Y decreasing (moving toward top of frame)
+Angle: -90deg (pure upward in screen)
+Direction: moving_away
+Announcement: "Person started moving away"
+
+** Scenario 2: Car Approaching
+
+Screen: Car bbox Y increasing (moving toward bottom of frame)
+Angle: 90deg (pure downward in screen)
+Direction: moving_closer
+Announcement: "Danger! car approaching at fast speed!"
+
+** Scenario 3: Diagonal Movement
+
+Screen: Person moving right and up (dx > 0, dy < 0)
+Angle: -30deg
+Direction: moving_right (closest to -30deg)
+Announcement: "Person moving to the right"
+
+But if angle was -60deg:
+Direction: moving_away
+Announcement: "Person moving away"
+
+* Camera Assumptions
+
+** Implicit Assumptions
+
+System assumes:
+1. Camera held upright (not sideways)
+2. Camera facing forward (user's perspective)
+3. Bottom of frame = ground/close objects
+4. Top of frame = horizon/distant objects
+
+Typical for:
+- Handheld camera navigation
+- Phone camera held in front
+- Fixed camera on wheelchair/mobility device
+
+** Edge Cases
+
+Not handled currently:
+- Camera tilted up (sky view) - top might be very far, not close
+- Camera tilted down (ground view) - bottom might be very close
+- Camera sideways - left/right would be up/down
+- Ceiling-mounted camera - perspective inverted
+
+Could detect with:
+- Gyroscope orientation
+- Horizon detection
+- Vertical vanishing point
+
+* Related Systems
+
+** Similar Perspective Mapping
+
+*** Radar Systems
+"Approaching" vs "receding" instead of coordinate directions
+
+*** Aviation
+"Closing" vs "opening" relative to aircraft
+
+*** Automotive
+"Approaching" vs "departing" for collision avoidance
+
+All translate sensor coordinates to user-centric perspective.
+
+* Complexity
+
+** Computational Cost
+
+Negligible:
+- Angle already calculated for movement detection
+- Just different string labels
+- No additional math
+
+** Maintenance
+
+Low:
+- Simple if-else logic
+- Clear mapping rules
+- Well-documented
+
+* Related Notes
+
+** Part Of
+- [[id:20251015112600-predict_collision][Collision Detection System]]
+- [[id:20251015121000-movement_tracking][Movement Tracking]]
+
+** Used By
+- [[id:20251015112500-update_tracks][update_tracks()]] - Provides movement data
+- Voice announcements in detection.js
+- Collision warnings
+- Navigation system
+
+** Related Concepts
+- [[id:20251015184400-reactive_navigation][Reactive Navigation]] - Also uses perspective-aware spatial reasoning
+- Camera coordinate systems
+- Perspective projection
+- Spatial audio
+
+* Testing
+
+** Verification
+
+Test scenarios:
+1. Object moving toward camera (expect "approaching")
+2. Object moving away (expect "moving away")
+3. Object crossing left to right (expect "moving right")
+4. Stationary object (expect "stationary")
+
+** User Feedback
+
+Before: "The 'moved up' thing was super jarring"
+After: "Much clearer! I know when things are coming toward me"
+
+* Future Enhancements
+
+** Gyroscope Integration
+
+Use device orientation to handle camera tilt:
+#+begin_src python
+if camera_pitch > 30:  # Tilted up
+    # Adjust perspective mapping
+    # "Up" might not mean "away"
+#+end_src
+
+** 3D Direction
+
+With depth sensors:
+#+begin_src python
+direction_3d = {
+    'lateral': 'left' / 'right',
+    'depth': 'approaching' / 'receding',
+    'vertical': 'above' / 'below'  # New!
+}
+#+end_src
+
+Example: "Drone approaching from above-right"
+
+** Velocity-Based Phrasing
+
+#+begin_src python
+if velocity > high_threshold:
+    text = "rapidly approaching"
+elif velocity > medium_threshold:
+    text = "approaching"
+else:
+    text = "slowly approaching"
+#+end_src
+
+** Distance Integration
+
+#+begin_src python
+if distance < close_threshold:
+    text = "close and approaching"
+else:
+    text = "approaching from distance"
+#+end_src

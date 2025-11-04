@@ -1,0 +1,404 @@
+:PROPERTIES:
+:ID:       20251015130600-iou_confidence_scores
+:ROAM_ALIASES: "IoU" "Intersection over Union" "Confidence Score" "Objectness"
+:END:
+#+title: IoU and Confidence Scores in Object Detection
+#+filetags: :iou:confidence:metrics:object_detection:evaluation:
+
+* Intersection over Union (IoU)
+
+** Core Concept
+IoU measures overlap between two bounding boxes.
+
+Definition:
+```
+IoU = Area of Intersection / Area of Union
+    = |Box1 ∩ Box2| / |Box1 ∪ Box2|
+```
+
+Range: [0, 1]
+- 0: No overlap
+- 1: Perfect overlap
+
+** Geometric Interpretation
+```
+        Box A          Box B
+      +-------+      +-------+
+      |       |      |   |###|# <- Intersection
+      |   +---|------+   |###|
+      |   |###|######## |###|
+      +---|---+      +---+   |
+          +-------+          |
+            Union      -------+
+```
+
+IoU = Area(###) / Area(Union of A and B)
+
+** Calculation Steps
+
+*** 1. Find Intersection Rectangle
+```
+x1_inter = max(x1_box1, x1_box2)
+y1_inter = max(y1_box1, y1_box2)
+x2_inter = min(x2_box1, x2_box2)
+y2_inter = min(y2_box1, y2_box2)
+```
+
+*** 2. Intersection Area
+```
+if x2_inter > x1_inter and y2_inter > y1_inter:
+    inter_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+else:
+    inter_area = 0  # No overlap
+```
+
+*** 3. Union Area
+```
+area1 = (x2_box1 - x1_box1) * (y2_box1 - y1_box1)
+area2 = (x2_box2 - x1_box2) * (y2_box2 - y1_box2)
+union_area = area1 + area2 - inter_area
+```
+
+*** 4. IoU
+```
+IoU = inter_area / union_area
+```
+
+** Properties
+
+*** Scale Invariant
+- IoU(big_boxes) ≈ IoU(small_boxes) if proportionally similar
+- Fair comparison across sizes
+
+*** Symmetric
+- IoU(A, B) = IoU(B, A)
+
+*** Bounded
+- Always in [0, 1]
+- Easy to interpret as percentage
+
+*** Non-Differentiable Edges
+- Discontinuous when boxes don't overlap
+- Problematic for gradient-based optimization
+
+* IoU Variants
+
+** 1. Generalized IoU (GIoU)
+Addresses non-overlapping boxes problem
+
+```
+GIoU = IoU - (Area_C - Union) / Area_C
+```
+- C: Smallest enclosing box
+- Range: [-1, 1]
+- Differentiable even without overlap
+
+Benefits:
+- Gradient signal when IoU = 0
+- Encourages boxes to move toward each other
+- Better for loss functions
+
+** 2. Distance IoU (DIoU)
+Considers distance between centers
+
+```
+DIoU = IoU - (d^2 / c^2)
+```
+- d: Euclidean distance between centers
+- c: Diagonal of enclosing box
+- Range: [-1, 1]
+
+Benefits:
+- Directly minimizes center distance
+- Faster convergence than GIoU
+- More intuitive geometry
+
+** 3. Complete IoU (CIoU)
+Adds aspect ratio consistency
+
+```
+CIoU = IoU - (d^2 / c^2) - alpha * v
+v = (4 / pi^2) * (arctan(w_gt/h_gt) - arctan(w_pred/h_pred))^2
+alpha = v / ((1 - IoU) + v)
+```
+
+Benefits:
+- Considers overlap, distance, and shape
+- Best localization accuracy
+- Most comprehensive metric
+
+** 4. Efficient IoU (EIoU)
+Separate width and height
+
+```
+EIoU = IoU - (d^2 / c^2) - (w_diff^2 / w_c^2) - (h_diff^2 / h_c^2)
+```
+
+Benefits:
+- Direct penalty on width/height differences
+- Can be faster in some implementations
+
+* Confidence Scores
+
+** Definition (YOLO)
+Confidence represents:
+1. Objectness: Probability that box contains object
+2. Localization quality: How accurate the box is
+
+```
+Confidence = Pr(Object) * IoU(pred, truth)
+```
+
+During inference:
+```
+Confidence = Pr(Object)  # Predicted by network
+```
+
+** Objectness Score
+Probability that cell contains object:
+- Binary: Object vs background
+- Learned by network
+- Output of sigmoid activation
+- Range: [0, 1]
+
+** Class-Conditional Confidence
+Final detection score:
+```
+Class_confidence = Objectness * Class_probability
+```
+
+For class i:
+```
+Score_i = Pr(Object) * Pr(Class_i | Object) * IoU
+```
+
+During inference (unknown IoU):
+```
+Score_i = Pr(Object) * Pr(Class_i | Object)
+```
+
+** Confidence Calibration
+Network confidence should reflect actual accuracy:
+- Well-calibrated: 0.9 confidence -> 90% correct
+- Over-confident: Claims high confidence on errors
+- Under-confident: Low scores on correct detections
+
+Techniques:
+- Temperature scaling
+- Focal loss (reduces overconfidence on easy examples)
+- Label smoothing
+
+* IoU in Training
+
+** Loss Functions
+See [[id:20251015130900-yolo_loss_function][YOLO Loss Function]]
+
+*** Direct IoU Loss
+```
+L_IoU = 1 - IoU(pred, truth)
+```
+Problems:
+- Zero gradient when no overlap
+- Optimization challenges
+
+*** GIoU/DIoU/CIoU Loss
+```
+L = 1 - GIoU/DIoU/CIoU(pred, truth)
+```
+- Better gradients
+- Faster convergence
+- State-of-art choice
+
+** Anchor Matching
+IoU determines anchor-ground truth assignment:
+```
+best_anchor = argmax_i IoU(anchor_i, ground_truth)
+```
+
+Only best anchor responsible for prediction
+See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+** Positive/Negative Classification
+- Positive: IoU > 0.5 (object present)
+- Negative: IoU < 0.4 (background)
+- Ignore: 0.4 ≤ IoU ≤ 0.5 (ambiguous)
+
+* IoU in Evaluation
+
+** Detection Metrics
+Mean Average Precision (mAP) based on IoU
+
+*** PASCAL VOC
+- IoU threshold: 0.5
+- Detection correct if IoU > 0.5
+- mAP@0.5
+
+*** COCO (Stricter)
+- IoU thresholds: 0.5, 0.55, 0.60, ..., 0.95
+- Average over 10 thresholds
+- mAP@[0.5:0.95]
+
+*** Per-Size Metrics
+- mAP_small: Objects < 32^2 pixels
+- mAP_medium: 32^2 < Objects < 96^2
+- mAP_large: Objects > 96^2 pixels
+
+** Precision-Recall Curve
+For each IoU threshold:
+1. Rank predictions by confidence
+2. For each confidence threshold:
+   - Compute precision and recall
+   - Detection is TP if IoU > threshold
+3. Plot curve
+4. Average Precision = Area under curve
+
+** True/False Positives
+- True Positive: IoU > threshold with ground truth
+- False Positive: IoU ≤ threshold (or duplicate)
+- False Negative: Ground truth not detected
+
+* IoU in Inference
+
+** Non-Maximum Suppression (NMS)
+Uses IoU to remove duplicates:
+```
+1. Sort predictions by confidence
+2. For highest confidence box:
+   - Keep it
+   - Remove all boxes with IoU > threshold (e.g., 0.45)
+3. Repeat for remaining boxes
+```
+See [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+** Confidence Thresholding
+Pre-filter before NMS:
+```
+detections = [box for box in predictions if box.confidence > threshold]
+```
+Typical threshold: 0.25-0.5
+
+* Practical Considerations
+
+** IoU Threshold Selection
+
+*** Training
+- 0.5: Standard for positive assignment
+- Higher (0.7): Stricter, better localization
+- Lower (0.3): More positives, better recall
+
+*** Evaluation
+- 0.5: Lenient, standard benchmark
+- 0.75: Strict, good localization
+- [0.5:0.95]: Comprehensive (COCO)
+
+*** NMS
+- 0.45: Typical value
+- Higher (0.6): Keep more boxes (recall)
+- Lower (0.3): Aggressive suppression (precision)
+
+** Computational Efficiency
+IoU calculation is bottleneck:
+- Many box pairs
+- Vectorization critical
+- GPU acceleration helps
+
+Optimization:
+```python
+# Vectorized IoU for N boxes
+def batch_iou(boxes1, boxes2):
+    # boxes: [N, 4] (x1, y1, x2, y2)
+    # Returns: [N, M] IoU matrix
+    ...  # Parallel computation
+```
+
+** Edge Cases
+
+*** Zero Area Boxes
+- Invalid predictions (w=0 or h=0)
+- Set IoU = 0
+- Penalize in loss
+
+*** Very Small Overlaps
+- Numerical precision issues
+- Clip to [0, 1] range
+
+*** Identical Boxes
+- IoU = 1.0 exactly
+- May need epsilon for stability
+
+* Limitations and Alternatives
+
+** IoU Limitations
+
+*** Position Bias
+Two boxes with same IoU may have different spatial relationships:
+- Centered overlap vs corner overlap
+- IoU doesn't distinguish
+
+*** Aspect Ratio
+- Boxes with very different aspect ratios can have same IoU
+- May not reflect perceptual similarity
+
+*** No Notion of Containment
+- IoU(small_in_large, large) may equal IoU(overlapping_same_size)
+- Semantically different situations
+
+** Alternative Metrics
+
+*** Generalized IoU (GIoU)
+Already discussed above
+
+*** Intersection over Area
+```
+IoA = Area_intersection / Area_box1
+```
+- Measures containment
+- Not symmetric
+- Useful for specific tasks (occlusion)
+
+*** Normalized Distance
+```
+ND = sqrt((x1-x2)^2 + (y1-y2)^2) / diagonal
+```
+- Focuses on center distance
+- Ignores size/shape
+
+* Confidence Score Interpretation
+
+** Well-Calibrated Model
+Distribution of confidences matches accuracy:
+```
+Confidence 0.9 -> 90% of boxes are correct (IoU > threshold)
+Confidence 0.5 -> 50% correct
+```
+
+** Confidence vs IoU Correlation
+Ideal: High correlation
+- High confidence -> High IoU
+- Low confidence -> Low IoU
+
+Reality: Often imperfect
+- Post-processing can improve
+- IoU prediction as auxiliary task
+
+** Uncertainty Estimation
+Confidence represents uncertainty:
+- High confidence: Model certain
+- Low confidence: Model uncertain
+- Critical for safety-critical applications
+
+* Related Concepts
+
+- [[id:20251015130450-bounding_box_predictions][Bounding Box Predictions]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+- [[id:20251015130900-yolo_loss_function][YOLO Loss Function]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+
+* Footnotes
+
+[fn:1] IoU is foundation metric for all object detection evaluation
+
+[fn:2] GIoU, DIoU, CIoU progressively address IoU limitations for optimization
+
+[fn:3] COCO's mAP@[0.5:0.95] is strictest standard benchmark metric

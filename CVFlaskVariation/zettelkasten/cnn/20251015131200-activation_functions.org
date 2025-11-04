@@ -1,0 +1,512 @@
+:PROPERTIES:
+:ID:       20251015131100-activation_functions
+:ROAM_ALIASES: "Activations" "Non-linearity" "Activation Layer"
+:END:
+#+title: Activation Functions in Neural Networks
+#+filetags: :activation:neural_networks:non_linearity:deep_learning:
+
+* Core Concept
+
+Activation functions introduce non-linearity into neural networks, enabling them to learn complex patterns beyond linear transformations.
+
+Without activation: Neural network reduces to single linear transformation regardless of depth.
+
+* Why Activation Functions?
+
+** Problem: Linear Transformations Only
+```
+Layer1: y = W1*x + b1
+Layer2: z = W2*y + b2
+      = W2*(W1*x + b1) + b2
+      = (W2*W1)*x + (W2*b1 + b2)
+      = W_combined*x + b_combined
+```
+Multiple linear layers = single linear layer
+
+** Solution: Non-Linearity
+Activation function f:
+```
+Layer1: y = f(W1*x + b1)
+Layer2: z = f(W2*y + b2)
+```
+Now cannot be reduced to single linear function
+
+** Enables
+- Learning complex patterns
+- Deep hierarchies
+- Universal approximation
+
+* Classical Activation Functions
+
+** 1. Sigmoid (Logistic)
+```
+f(x) = 1 / (1 + exp(-x))
+```
+
+Range: (0, 1)
+
+*** Derivative
+```
+f'(x) = f(x) * (1 - f(x))
+```
+
+*** Advantages
+- Smooth gradient
+- Output interpretable as probability
+- Bounded output
+
+*** Disadvantages
+- Vanishing gradient problem (saturates)
+- Not zero-centered
+- Computationally expensive (exp)
+- Rarely used in hidden layers now
+
+*** Usage
+- Output layer for binary classification
+- Gate functions (LSTM, GRU)
+
+** 2. Tanh (Hyperbolic Tangent)
+```
+f(x) = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+    = 2*sigmoid(2x) - 1
+```
+
+Range: (-1, 1)
+
+*** Derivative
+```
+f'(x) = 1 - f(x)^2
+```
+
+*** Advantages
+- Zero-centered (better than sigmoid)
+- Stronger gradients than sigmoid
+- Smooth
+
+*** Disadvantages
+- Still has vanishing gradient problem
+- Computationally expensive
+
+*** Usage
+- RNNs (less common now)
+- Sometimes in hidden layers
+- Largely replaced by ReLU
+
+** 3. ReLU (Rectified Linear Unit)
+```
+f(x) = max(0, x)
+    = x if x > 0
+    = 0 if x <= 0
+```
+
+Range: [0, infinity)
+
+*** Derivative
+```
+f'(x) = 1 if x > 0
+      = 0 if x <= 0
+```
+
+*** Advantages
+- Simple computation
+- No vanishing gradient for positive x
+- Sparse activation (many zeros)
+- Accelerates convergence (6x vs sigmoid)
+- Biologically plausible
+
+*** Disadvantages
+- Dying ReLU problem (neurons can die)
+- Not zero-centered
+- Unbounded output
+
+*** Dying ReLU
+- If neuron outputs negative, gradient = 0
+- Weights never update
+- Neuron "dies"
+- Can affect large portion of network
+- Solution: Proper initialization, lower learning rate
+
+*** Usage
+- Default choice for CNNs
+- Hidden layers in most architectures
+- Industry standard since 2012
+
+* Modern Activation Functions
+
+** 4. Leaky ReLU
+```
+f(x) = x if x > 0
+     = alpha*x if x <= 0
+```
+Typical alpha = 0.01
+
+*** Derivative
+```
+f'(x) = 1 if x > 0
+      = alpha if x <= 0
+```
+
+*** Advantages
+- Solves dying ReLU problem
+- Small gradient for negative x
+- Simple computation
+
+*** Disadvantages
+- Hyperparameter alpha to tune
+- Performance not always better than ReLU
+
+*** Usage
+- Alternative to ReLU
+- When dying ReLU is observed
+- YOLO v3/v4 uses Leaky ReLU
+
+** 5. PReLU (Parametric ReLU)
+```
+f(x) = x if x > 0
+     = alpha*x if x <= 0
+```
+Alpha is learnable parameter
+
+*** Advantages
+- Learns optimal alpha
+- Adapts to data
+- Better than fixed Leaky ReLU
+
+*** Disadvantages
+- Extra parameters
+- Risk of overfitting
+- Slightly more complex
+
+*** Usage
+- When extra parameters acceptable
+- High-capacity models
+- PReLU in ResNet variants
+
+** 6. ELU (Exponential Linear Unit)
+```
+f(x) = x if x > 0
+     = alpha*(exp(x) - 1) if x <= 0
+```
+Typical alpha = 1.0
+
+*** Derivative
+```
+f'(x) = 1 if x > 0
+      = f(x) + alpha if x <= 0
+```
+
+*** Advantages
+- Smooth everywhere
+- Mean activation closer to zero
+- Reduces bias shift
+- No dying ReLU
+
+*** Disadvantages
+- Computationally expensive (exp)
+- Slower than ReLU
+
+*** Usage
+- When computational cost acceptable
+- Research experiments
+- Some modern architectures
+
+** 7. SELU (Scaled ELU)
+```
+f(x) = lambda * x if x > 0
+     = lambda * alpha * (exp(x) - 1) if x <= 0
+```
+lambda ≈ 1.0507, alpha ≈ 1.6733
+
+*** Self-Normalizing Property
+- Automatically normalizes activations
+- Maintains mean 0, variance 1
+- Reduces need for batch normalization
+
+*** Advantages
+- Self-normalizing
+- Deep networks without batch norm
+- Theoretical guarantees
+
+*** Disadvantages
+- Requires specific initialization (lecun_normal)
+- Requires dropout variant (alpha-dropout)
+- Strict conditions for self-normalization
+
+*** Usage
+- Deep fully-connected networks
+- When batch normalization problematic
+- Less common in CNNs
+
+** 8. Swish / SiLU (Sigmoid Linear Unit)
+```
+f(x) = x * sigmoid(beta*x)
+```
+When beta = 1: SiLU (PyTorch name)
+
+*** Derivative
+```
+f'(x) = f(x) + sigmoid(x)*(1 - f(x))
+```
+
+*** Advantages
+- Smooth, non-monotonic
+- Better than ReLU in many cases
+- Self-gated (like attention)
+- Discovered by neural architecture search
+
+*** Disadvantages
+- More computation than ReLU
+- Requires sigmoid computation
+
+*** Usage
+- Modern architectures (EfficientNet, Transformer variants)
+- YOLOv5+ uses SiLU
+- Increasingly popular as ReLU alternative
+
+** 9. Mish
+```
+f(x) = x * tanh(softplus(x))
+     = x * tanh(ln(1 + exp(x)))
+```
+
+*** Advantages
+- Smooth, non-monotonic
+- Better than ReLU and Swish (in some tasks)
+- Self-regularizing
+- Unbounded above, bounded below
+
+*** Disadvantages
+- More expensive than ReLU
+- Computational overhead
+
+*** Usage
+- YOLOv4 uses Mish
+- Some modern research architectures
+- When computational budget allows
+
+** 10. GELU (Gaussian Error Linear Unit)
+```
+f(x) = x * Phi(x)
+```
+Phi: Cumulative distribution function of standard normal
+
+Approximation:
+```
+f(x) ≈ 0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3)))
+```
+
+*** Advantages
+- Smooth, non-monotonic
+- Stochastic regularization interpretation
+- Strong performance in transformers
+
+*** Disadvantages
+- Computationally expensive
+- Complex implementation
+
+*** Usage
+- Transformer models (BERT, GPT)
+- Vision transformers
+- NLP and multi-modal models
+
+* Activation Function Properties
+
+** Desirable Properties
+
+*** 1. Non-Linearity
+Essential for learning complex functions
+
+*** 2. Differentiability
+Enables backpropagation
+- Smooth preferred
+- Sub-differentiable acceptable (ReLU at 0)
+
+*** 3. Monotonicity
+Simplifies optimization (not always required)
+- ReLU, sigmoid, tanh: monotonic
+- Swish, Mish, GELU: non-monotonic (can be better)
+
+*** 4. Smooth Gradients
+Reduces optimization difficulties
+- Sigmoid, tanh: smooth but saturate
+- ReLU: not smooth at 0 but works well
+
+*** 5. Computational Efficiency
+Faster activations allow deeper/wider networks
+- ReLU: Very fast
+- Sigmoid/tanh: Slow
+- Swish/Mish: Moderate
+
+*** 6. Gradient Flow
+Avoid vanishing/exploding gradients
+- ReLU family: Good for positive
+- Sigmoid/tanh: Poor for deep networks
+
+** Trade-offs
+
+*** Speed vs Performance
+- ReLU: Fastest, good performance
+- Swish/Mish: Slower, sometimes better
+- Choice depends on application
+
+*** Simplicity vs Sophistication
+- ReLU: Simple, works well
+- GELU, Mish: Complex, marginal gains
+- Diminishing returns
+
+* Activation Functions in CNNs
+
+** Standard Practice
+```
+Conv -> BatchNorm -> Activation -> ...
+```
+
+** Common Choices
+
+*** For General CNNs
+- ReLU: Default, reliable
+- Leaky ReLU: If dying ReLU issue
+
+*** For Modern Architectures
+- SiLU/Swish: EfficientNet, YOLOv5+
+- Mish: YOLOv4
+- GELU: Vision Transformers
+
+*** For Specific Layers
+- Output layer (classification): Softmax, sigmoid
+- Output layer (regression): Linear (no activation)
+- Gating mechanisms: Sigmoid, tanh
+
+* Activation Functions in YOLO
+
+** YOLOv1-v2
+- Leaky ReLU throughout
+- alpha = 0.1
+
+** YOLOv3-v4
+- Leaky ReLU (alpha = 0.1)
+- YOLOv4 experimented with Mish
+- Mish in backbone, Leaky ReLU in head
+
+** YOLOv5+
+- SiLU (Swish with beta=1)
+- Throughout network
+- Better than Leaky ReLU
+
+** YOLOv11 (Current)
+- SiLU/Swish activation
+- Modern best practice
+- See [[id:20251015112800-yolo_detector_class][YOLODetector Class]]
+
+* Practical Considerations
+
+** Selection Guidelines
+
+*** Default Choice
+Start with ReLU:
+- Proven track record
+- Fast
+- Works for most cases
+
+*** If Issues
+- Dying ReLU -> Leaky ReLU or PReLU
+- Need smoothness -> ELU
+- Maximum performance -> Try Swish/Mish
+
+### For Specific Domains
+- Computer vision: ReLU, Leaky ReLU, SiLU
+- NLP/Transformers: GELU
+- Deep networks: SELU (with proper setup)
+
+** Initialization Matters
+Activation choice affects initialization:
+- ReLU: He initialization
+- Tanh/sigmoid: Xavier/Glorot initialization
+- SELU: LeCun initialization
+
+** Batch Normalization Interaction
+- Batch norm reduces sensitivity to activation choice
+- Makes different activations more comparable
+- But activation still matters
+
+** Hardware Considerations
+- ReLU: Highly optimized on all hardware
+- Complex activations: May be slower
+- Mobile/edge: Stick to ReLU
+
+* Advanced Topics
+
+** Learnable Activations
+- PReLU: Learnable slope
+- APL (Adaptive Piecewise Linear): Learnable piecewise
+- Research direction
+
+** Activation Regularization
+Some activations provide implicit regularization:
+- ReLU: Sparsity
+- Swish/Mish: Smoothness
+
+** Combining Activations
+Different activations at different depths:
+- Early layers: ReLU (fast)
+- Deep layers: Swish (better gradients)
+- Experimentation needed
+
+** Neural Architecture Search for Activations
+- Automated activation selection
+- Dataset-specific optimal activations
+- Expensive but effective
+
+* Debugging Activation Issues
+
+** Dead Neurons
+Check activation statistics:
+```python
+# During training
+activations = model.forward(x, return_activations=True)
+dead_ratio = (activations == 0).float().mean()
+print(f"Dead neurons: {dead_ratio:.2%}")
+```
+
+If high (>50%):
+- Lower learning rate
+- Use Leaky ReLU or PReLU
+- Check initialization
+
+** Saturation
+For sigmoid/tanh:
+```python
+saturation = ((activations > 0.9) | (activations < 0.1)).float().mean()
+```
+
+If high:
+- Gradients vanishing
+- Switch to ReLU family
+- Add batch normalization
+
+** Exploding Activations
+```python
+max_activation = activations.abs().max()
+if max_activation > 1000:
+    print("Activations exploding!")
+```
+
+Solutions:
+- Lower learning rate
+- Gradient clipping
+- Check for bugs in architecture
+
+* Related Concepts
+
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130200-convolution_operations][Convolution Operations]]
+- [[id:20251015131200-batch_normalization][Batch Normalization]]
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+* Footnotes
+
+[fn:1] ReLU revolutionized deep learning, enabling training of very deep networks
+
+[fn:2] Modern activations (Swish, Mish, GELU) often 1-2% better than ReLU but slower
+
+[fn:3] Activation choice less critical with batch normalization but still impacts performance

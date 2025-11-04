@@ -1,0 +1,340 @@
+#+TITLE: CV Project Zettelkasten - Knowledge Base
+#+AUTHOR: Development Team
+#+DATE: 2025-10-15
+#+OPTIONS: toc:2 num:nil
+#+STARTUP: overview
+
+* Overview
+
+This is an org-roam Zettelkasten knowledge base for the CV Project (Indoor Navigation System for the Visually Impaired). It contains atomic, interconnected notes covering both theoretical foundations and implementation details.
+
+** What is Zettelkasten?
+
+Zettelkasten (German for "slip box") is a knowledge management system based on:
+- Atomic notes: One concept per note
+- Linking: Notes connect via [[id:]] links, not hierarchy
+- Emergence: Organization emerges from connections
+
+** What is org-roam?
+
+org-roam is an Emacs package that implements Zettelkasten principles using org-mode:
+- Timestamp-based IDs (20251015HHMMSS format)
+- Bidirectional linking via [[id:]] syntax
+- Database for fast searching and backlinks
+- Emacs integration for seamless navigation
+
+* Folder Structure
+
+We use a hybrid approach: domain-based folders with flat structure within each domain.
+
+#+BEGIN_SRC
+zettelkasten/
+├── yolo/          # YOLO-specific concepts (8 notes)
+├── cnn/           # CNN and deep learning fundamentals (4 notes)
+├── detection/     # Object detection architectures (3 notes)
+└── codebase/      # Project implementation notes (13+ notes)
+#+END_SRC
+
+** Why Folders?
+
+While traditional Zettelkasten is flat, we use folders for:
+1. Visual organization when browsing files
+2. Conceptual clarity (theory vs implementation)
+3. Scalability as the knowledge base grows
+4. No impact on org-roam functionality (IDs work across folders)
+
+* Domain Categories
+
+** yolo/ - YOLO Architecture (8 notes)
+
+Core YOLO concepts and algorithms:
+- 20251015130000 - YOLO Architecture Fundamentals
+- 20251015130400 - YOLO Grid System
+- 20251015130450 - Bounding Box Predictions
+- 20251015130500 - Anchor Boxes
+- 20251015130600 - IoU and Confidence Scores
+- 20251015130700 - Non-Maximum Suppression
+- 20251015131000 - YOLO Loss Function
+- 20251015131100 - YOLO Versions Evolution (v1-v11)
+
+Start here to understand how YOLO detection works.
+
+** cnn/ - CNN Fundamentals (4 notes)
+
+Deep learning and CNN theory:
+- 20251015130100 - CNN Fundamentals
+- 20251015130200 - Convolution Operations
+- 20251015131200 - Activation Functions
+- 20251015131300 - Batch Normalization
+
+Essential background for understanding neural networks.
+
+** detection/ - Detection Systems (3 notes)
+
+Broader object detection concepts:
+- 20251015130300 - Object Detection Paradigms
+- 20251015130800 - Backbone Architectures
+- 20251015130900 - Feature Pyramid Networks
+
+Contextualizes YOLO within detection landscape.
+
+** codebase/ - Implementation (13+ notes)
+
+Project-specific implementation:
+- 20251015110900 - CV Project Index (MAIN ENTRY POINT)
+- 20251015111200 - Data Flow MOC
+- 20251015111300 - Detection Service MOC
+- 20251015112100 - Accessibility MOC
+- 20251015112300 - detect_image() function
+- 20251015112400 - yolo_detect() function
+- 20251015112500 - update_tracks() function
+- 20251015112600 - predict_collision() function
+- 20251015112700 - astar_pathfinding() function
+- 20251015112800 - YOLODetector class
+- 20251015112900 - ObjectTrackingManager class
+- 20251015114700 - DeepSORT algorithm
+- README.org (this file, in codebase/)
+
+Connects theory to actual code.
+
+* Getting Started
+
+** For New Developers
+1. Start: [[file:codebase/20251015110900-cv_project_index.org][CV Project Index]]
+2. Understand flow: [[file:codebase/20251015111200-data_flow_moc.org][Data Flow MOC]]
+3. Read main function: [[file:codebase/20251015112300-detect_image.org][detect_image()]]
+
+** For Understanding YOLO
+1. Start: [[file:yolo/20251015130000-yolo_architecture_fundamentals.org][YOLO Architecture Fundamentals]]
+2. Deep dive: Follow [[id:]] links to grid system, anchors, loss function
+3. Historical context: [[file:yolo/20251015131100-yolo_versions_evolution.org][YOLO Versions Evolution]]
+
+** For CNN Theory
+1. Start: [[file:cnn/20251015130100-cnn_fundamentals.org][CNN Fundamentals]]
+2. Operations: [[file:cnn/20251015130200-convolution_operations.org][Convolution Operations]]
+3. Training: [[file:cnn/20251015131300-batch_normalization.org][Batch Normalization]]
+
+** For Detection Context
+1. Overview: [[file:detection/20251015130300-object_detection_paradigms.org][Object Detection Paradigms]]
+2. Architectures: [[file:detection/20251015130800-backbone_architectures.org][Backbone Architectures]]
+3. Multi-scale: [[file:detection/20251015130900-feature_pyramid_networks.org][Feature Pyramid Networks]]
+
+* Using org-roam in Emacs
+
+** Setup
+1. Install org-roam: M-x package-install RET org-roam RET
+2. Configure org-roam-directory: (setq org-roam-directory "path/to/zettelkasten")
+3. Build database: M-x org-roam-db-sync
+
+** Key Commands
+- M-x org-roam-node-find :: Find or create notes
+- M-x org-roam-node-insert :: Insert link to note
+- M-x org-roam-buffer-toggle :: Show backlinks sidebar
+- M-x org-roam-graph :: Visualize note connections
+- C-c C-o :: Follow link under cursor
+
+** Navigation
+- TAB :: Fold/unfold sections
+- C-c C-n :: Next heading
+- C-c C-p :: Previous heading
+- C-c C-u :: Up to parent heading
+
+* Note Format
+
+Every note follows this structure:
+
+#+BEGIN_EXAMPLE
+:PROPERTIES:
+:ID:       20251015130000-note_name
+:ROAM_ALIASES: "Alternative Name" "Alias"
+:ROAM_REFS: [[file:../../app/services/detection.py::42]]
+:END:
+#+title: Note Title
+#+filetags: :tag1:tag2:tag3:
+
+* Core Concept
+Main explanation...
+
+* Section 1
+Content...
+
+* Related Concepts
+- [[id:other-note-id][Other Note Title]]
+
+* Footnotes
+[fn:1] Additional information
+#+END_EXAMPLE
+
+** Key Elements
+- :ID: - Unique timestamp-based identifier
+- :ROAM_ALIASES: - Alternative names for searching
+- :ROAM_REFS: - Links to source code (for codebase notes)
+- #+filetags - Flexible categorization
+- [[id:]] links - Connect to other notes
+
+* Timestamp ID Format
+
+Format: YYYYMMDDHHMMSS-descriptive_slug.org
+
+Example: 20251015130000-yolo_architecture_fundamentals.org
+- 2025 - Year
+- 10 - Month (October)
+- 15 - Day
+- 13 - Hour (1 PM)
+- 00 - Minute
+- 00 - Second
+- yolo_architecture_fundamentals - Human-readable slug
+
+** Why Timestamps?
+1. Guaranteed uniqueness (no ID collisions)
+2. Chronological ordering
+3. org-roam standard
+4. Links use ID, so moving files doesn't break links
+
+* Linking Strategy
+
+** Within Same Domain
+Notes in same folder heavily reference each other:
+- YOLO notes link extensively within yolo/
+- CNN notes form foundational network
+
+** Cross-Domain
+Theory notes link to implementation:
+- yolo/architecture -> codebase/yolo_detector_class
+- cnn/convolution_operations -> detection/backbone_architectures
+
+** Emergent Organization
+- Don't force hierarchies
+- Let connections emerge naturally
+- Use tags for multiple categorizations
+- Folders are just visual aids
+
+* Tags System
+
+Common tags used:
+- :yolo: - YOLO-related concepts
+- :cnn: - CNN and deep learning
+- :architecture: - Architectural patterns
+- :algorithm: - Algorithm explanations
+- :implementation: - Code implementation
+- :moc: - Maps of Content (organizational notes)
+- :index: - Entry point notes
+- :training: - Training-related
+- :inference: - Inference-related
+
+Tags are flexible - add as needed!
+
+* Growth Strategy
+
+** Adding New Notes
+1. Create with timestamp: 20251015HHMMSS-new_concept.org
+2. Add to appropriate domain folder
+3. Include :ID: property matching filename (no .org)
+4. Link from related existing notes
+5. Add relevant tags
+6. Run: M-x org-roam-db-sync
+
+** When to Create New Domain Folder
+Create new domain when:
+- 5+ notes on distinct topic
+- Clear conceptual separation
+- Different from existing domains
+- Examples: algorithms/, training/, deployment/
+
+** Refactoring Notes
+- Split large notes into atomic concepts
+- Merge overly fragmented notes
+- Update links (org-roam handles renames via IDs)
+- Re-sync database after changes
+
+* Integration with Project
+
+** Documentation Hierarchy
+1. CLAUDE.md - Project instructions
+2. Documentation.org - Complete system documentation
+3. Changelog.org - Development history
+4. docs/DEVELOPER_HANDBOOK.org - Function reference
+5. zettelkasten/ - Deep knowledge base (THIS)
+
+** Use Cases
+- Quick lookup: DEVELOPER_HANDBOOK.org
+- Understanding flow: Documentation.org
+- Deep theory: zettelkasten/yolo/, zettelkasten/cnn/
+- Implementation details: zettelkasten/codebase/
+- Change history: Changelog.org
+
+** Maintenance
+- Update zettelkasten when adding major features
+- Create note for each new algorithm/concept
+- Link from theory to implementation
+- Keep atomic (one concept per note)
+
+* Statistics
+
+** Current Note Count
+- Total: 28+ notes
+- YOLO domain: 8 notes
+- CNN domain: 4 notes
+- Detection domain: 3 notes
+- Codebase domain: 13+ notes
+
+** Coverage
+- YOLO architecture: Complete
+- CNN fundamentals: Core concepts
+- Detection systems: Architectural overview
+- Implementation: Core pipeline documented
+
+** Future Expansion
+Potential areas:
+- Training procedures
+- Data augmentation techniques
+- Optimization strategies
+- Deployment considerations
+- Mobile optimization
+- A* pathfinding details
+- Audio processing
+- Accessibility features
+
+* References
+
+** org-roam Resources
+- Official docs: https://www.orgroam.com/
+- GitHub: https://github.com/org-roam/org-roam
+- Community: https://org-roam.discourse.group/
+
+** Zettelkasten Method
+- "How to Take Smart Notes" by Sonke Ahrens
+- zettelkasten.de
+- Pure Zettelkasten is flat, we use light folders
+
+** Project Documentation
+- [[file:../Documentation.org][Documentation.org]] - System documentation
+- [[file:../Changelog.org][Changelog.org]] - Development history
+- [[file:../docs/DEVELOPER_HANDBOOK.org][DEVELOPER_HANDBOOK.org]] - Quick reference
+- [[file:../CLAUDE.md][CLAUDE.md]] - Project instructions
+
+* Notes
+
+** ASCII-Only Requirement
+All notes use basic ASCII characters per CLAUDE.md requirements:
+- No unicode symbols
+- No special characters
+- Plain text formatting
+- Compatible with all text editors
+
+** Emacs Optional
+While org-roam requires Emacs, notes are readable as plain text:
+- Open in any text editor
+- Links visible as [[id:...]]
+- Structure clear with * headers
+- Fallback: Use file search for IDs
+
+** Backup Strategy
+Notes are plain text files:
+- Version controlled (Git)
+- Easy to backup
+- Platform independent
+- Future-proof format
+
+* Last Updated
+2025-10-15 15:45 - Initial domain-based reorganization

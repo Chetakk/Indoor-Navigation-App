@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(python3:*)",
+      "Bash(dir:*)",
+      "Bash(pip install:*)",
+      "Bash(tree:*)",
+      "Bash(findstr:*)",
+      "Bash(mkdir:*)",
+      "Bash(find:*)",
+      "Bash(awk:*)",
+      "Bash(git checkout:*)",
+      "Read(//c/Users/parik/OneDrive/Documents/GitHub/CV-Project/utilities/**)",
+      "Bash(move:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

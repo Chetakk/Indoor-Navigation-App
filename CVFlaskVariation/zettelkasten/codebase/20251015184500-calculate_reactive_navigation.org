@@ -1,0 +1,345 @@
+:PROPERTIES:
+:ID:       20251015184500-calculate_reactive_navigation
+:ROAM_REFS: [[file:../app/services/pathfinder.py::def calculate_reactive_navigation]]
+:END:
+#+title: calculate_reactive_navigation() Function
+#+filetags: :function:navigation:reactive:realtime:
+
+* Function Signature
+
+#+begin_src python
+def calculate_reactive_navigation(detections, goal, start, image_width, image_height):
+    """
+    Reactive local navigation - calculates immediate safe direction toward goal.
+    Designed for dynamic environments with moving obstacles.
+    """
+    # ...
+#+end_src
+
+Location: app/services/pathfinder.py:229
+
+* Description
+
+Core reactive navigation algorithm that analyzes current scene and provides
+immediate safe walking direction toward goal. Runs continuously (every 500ms)
+to adapt to dynamic obstacles.
+
+Replaces [[id:20251015112700-astar_pathfinding][astar_pathfinding()]] for real-time blind navigation.
+
+* Parameters
+
+- detections :: list[dict] - Current detected objects with bboxes, velocity
+- goal :: [x, y] - Goal position in pixel coordinates
+- start :: [x, y] - Current user position in pixel coordinates
+- image_width :: int - Image width in pixels
+- image_height :: int - Image height in pixels
+
+* Returns
+
+dict with (all values JSON-safe native Python types):
+- reached_goal :: bool - True if within 1px of goal
+- safe_direction :: [x, y] - Normalized direction vector to walk
+- goal_direction :: [x, y] - Direct direction to goal (for comparison)
+- distance_to_goal :: float - Distance to goal in pixels
+- obstacles :: list[dict] - Top 5 threatening obstacles
+- guidance :: dict - Voice guidance messages
+- deviation_angle :: float - Deviation from direct path (degrees)
+
+*IMPORTANT:* All values explicitly converted to native Python types (bool, float, list)
+to ensure JSON serialization compatibility with Flask's jsonify().
+
+* Algorithm
+
+** 1. Calculate Goal Vector
+
+#+begin_src python
+goal_vector = [goal[0] - start[0], goal[1] - start[1]]
+distance_to_goal = sqrt(goal_vector[0]^2 + goal_vector[1]^2)
+
+if distance_to_goal < 1:
+    return {'reached_goal': True}
+
+goal_direction = goal_vector / distance_to_goal  # Normalize
+#+end_src
+
+** 2. Analyze Obstacles
+
+For each detection:
+#+begin_src python
+# Calculate obstacle properties
+obs_center = [(x1+x2)/2, (y1+y2)/2]
+obs_size = max(width, height)
+to_obstacle = obs_center - start
+distance_to_obs = |to_obstacle|
+direction_to_obs = to_obstacle / distance_to_obs
+
+# Check if in path to goal
+alignment_with_goal = dot_product(direction_to_obs, goal_direction)
+in_path = (alignment_with_goal > 0.5)  # Within 60deg cone
+
+# Get movement data
+is_moving = detection.get('is_moving', False)
+velocity = detection.get('velocity', [0, 0])
+
+# Calculate threat score
+threat = 0
+if in_path:
+    threat += 100 / max(distance, 1)  # Closer = higher
+if is_moving:
+    threat += 20  # Moving objects more dangerous
+#+end_src
+
+** 3. Find Safe Direction
+
+Call [[id:20251015184600-find_safe_direction][find_safe_direction()]]:
+#+begin_src python
+safe_direction = find_safe_direction(
+    goal_direction,
+    obstacles,
+    start,
+    image_width,
+    image_height
+)
+#+end_src
+
+** 4. Generate Voice Guidance
+
+Call [[id:20251015184700-generate_voice_guidance][generate_voice_guidance()]]:
+#+begin_src python
+guidance = generate_voice_guidance(
+    safe_direction,
+    goal_direction,
+    distance_to_goal,
+    obstacles
+)
+#+end_src
+
+* Obstacle Analysis Details
+
+** Threat Scoring
+
+Obstacles sorted by threat level:
+#+begin_src python
+def threat_score(obs):
+    threat = 0
+    if obs['in_path']:
+        threat += 100 / max(obs['distance'], 1)
+    if obs['is_moving']:
+        threat += 20
+    return threat
+#+end_src
+
+High threat = close + in path + moving
+
+** Obstacle Properties Stored
+
+Each obstacle dict contains (JSON-safe types, 2025-10-16 fix):
+- label :: Object class name (person, car, etc.)
+- center :: [x, y] obstacle center as list
+- size :: float(obs_size) - max(width, height)
+- distance :: float(distance_to_obs) - Distance from user
+- direction :: [x, y] normalized direction vector as list
+- alignment_with_goal :: float(alignment_with_goal) - Dot product with goal
+- is_moving :: bool(is_moving) - Boolean from tracker
+- velocity :: [float(v) for v in velocity] - [vx, vy] from tracker
+- bbox :: [float(b) for b in bbox] - [x1, y1, x2, y2]
+- in_path :: bool(alignment_with_goal > 0.5) - Boolean (alignment > 0.5)
+
+*NOTE:* Explicit type conversions added 2025-10-16 to fix JSON serialization errors.
+Flask's jsonify() requires native Python types, not numpy types.
+
+* Example Output
+
+#+begin_src python
+{
+    'reached_goal': False,
+    'safe_direction': [0.866, 0.5],      # 30deg right of straight
+    'goal_direction': [0.707, 0.707],    # 45deg direct
+    'distance_to_goal': 350.5,
+    'obstacles': [
+        {
+            'label': 'person',
+            'distance': 120.3,
+            'in_path': True,
+            'is_moving': True,
+            'alignment_with_goal': 0.85
+        },
+        # ... top 5 threats
+    ],
+    'guidance': {
+        'primary': 'Bear slightly right, 3 meters',
+        'warnings': ['moving person on left'],
+        'full_message': 'Bear slightly right, 3 meters, moving person on left'
+    },
+    'deviation_angle': 15.2
+}
+#+end_src
+
+* Usage Pattern
+
+** Frontend (JavaScript)
+
+#+begin_src javascript
+// Called every 500ms when navigation active
+const response = await fetch('/navigate_reactive', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+        detections: window.lastDetections,
+        goal: navigationGoal,
+        image_width: video.videoWidth,
+        image_height: video.videoHeight
+    })
+});
+
+const data = await response.json();
+navigationGuidance = data;
+
+// Speak guidance if significant change
+if (data.deviation_angle > 20 || data.guidance.warnings.length > 0) {
+    queueAnnouncement(data.guidance.full_message, 'medium');
+}
+#+end_src
+
+** Backend (Flask Route)
+
+See /navigate_reactive endpoint in app/routes/navigation.py:87
+
+* Performance
+
+- Typical obstacles: 5-20 per scene
+- Computation: < 10ms
+- Obstacle analysis: O(n) where n = detections
+- Direction finding: O(obstacles * 16) for 16 direction samples
+- Total: O(n) linear in number of detections
+
+Very fast compared to A* pathfinding (100-500ms).
+
+* Edge Cases
+
+** No Detections
+#+begin_src python
+if not detections:
+    # Still provide basic guidance toward goal
+    return {
+        'safe_direction': goal_direction,
+        'guidance': {'primary': 'Walk toward destination'}
+    }
+#+end_src
+
+** Goal Reached
+#+begin_src python
+if distance_to_goal < 1:
+    return {
+        'reached_goal': True,
+        'message': 'Goal reached'
+    }
+#+end_src
+
+** All Directions Blocked
+find_safe_direction() will return best available direction
+even if not ideal. Never fails to provide guidance.
+
+* Advantages Over A*
+
+1. Handles moving obstacles naturally
+2. No path invalidation problem
+3. Lower computational cost (< 10ms vs 100-500ms)
+4. Works with partial knowledge
+5. Always provides guidance (never "no path found")
+6. Real-time adaptation to scene changes
+
+* Related Notes
+
+** Part Of
+- [[id:20251015184400-reactive_navigation][Reactive Navigation System]]
+
+** Called By
+- /navigate_reactive API endpoint (navigation.py:87)
+- Frontend pathfinding.js every 500ms
+
+** Calls
+- [[id:20251015184600-find_safe_direction][find_safe_direction()]] - Direction finding
+- [[id:20251015184700-generate_voice_guidance][generate_voice_guidance()]] - Voice output
+
+** Replaced
+- [[id:20251015112700-astar_pathfinding][astar_pathfinding()]] - Static pathfinding
+
+** Related
+- [[id:20251015112500-update_tracks][update_tracks()]] - Provides velocity data
+- [[id:20251015112600-predict_collision][predict_collision()]] - Collision detection
+
+* Parameters Tuning
+
+** Alignment Threshold
+#+begin_src python
+in_path = (alignment_with_goal > 0.5)  # 60deg cone
+#+end_src
+
+Lower = wider cone = more obstacles considered
+Higher = narrower cone = only obstacles directly ahead
+
+** Threat Scoring
+#+begin_src python
+threat += 100 / max(distance, 1)  # Distance component
+threat += 20 if is_moving          # Movement component
+#+end_src
+
+Adjust weights to balance distance vs movement importance.
+
+** Update Frequency
+Frontend: NAVIGATION_UPDATE_INTERVAL = 500ms
+
+Lower = more responsive, more API calls
+Higher = less responsive, fewer API calls
+
+* Bug Fixes
+
+** 2025-10-16: JSON Serialization Error
+FIXED: TypeError: Object of type bool is not JSON serializable
+
+*** Problem
+Function returned numpy types (numpy.float64, numpy.bool_) that Flask's
+jsonify() could not serialize to JSON. Navigation endpoint crashed.
+
+*** Solution
+Explicitly convert all return values to native Python types:
+#+begin_src python
+return {
+    'reached_goal': bool(False),              # Was: False
+    'safe_direction': safe_direction.tolist(),
+    'goal_direction': goal_direction.tolist(),
+    'distance_to_goal': float(distance_to_goal),
+    'obstacles': obstacles[:5],  # Each obstacle dict also converted
+    'guidance': guidance,
+    'deviation_angle': float(np.degrees(...))
+}
+
+# Obstacle properties converted:
+obstacles.append({
+    'size': float(obs_size),                   # Was: obs_size
+    'distance': float(distance_to_obs),         # Was: distance_to_obs
+    'alignment_with_goal': float(alignment),    # Was: alignment
+    'is_moving': bool(is_moving),              # Was: is_moving
+    'velocity': [float(v) for v in velocity],  # Was: velocity
+    'bbox': [float(b) for b in bbox],          # Was: bbox
+    'in_path': bool(alignment > 0.5)           # Was: alignment > 0.5
+})
+#+end_src
+
+*** Files Modified
+- app/services/pathfinder.py:248-255, 289-300, 330-338
+
+* Future Enhancements
+
+** Obstacle Trajectory Prediction
+Use Kalman filter predictions to anticipate obstacle movement
+
+** Dynamic Threat Scoring
+Weight by object size (car more threatening than person)
+
+** Memory Integration
+Remember recent obstacles for smoother path
+
+** Velocity-Based Penalties
+Penalize approaching obstacles more than receding ones

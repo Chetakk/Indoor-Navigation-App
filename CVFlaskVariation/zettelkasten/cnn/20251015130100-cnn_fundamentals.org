@@ -1,0 +1,259 @@
+:PROPERTIES:
+:ID:       20251015130100-cnn_fundamentals
+:ROAM_ALIASES: "CNN" "Convolutional Neural Networks" "ConvNets"
+:END:
+#+title: Convolutional Neural Network (CNN) Fundamentals
+#+filetags: :cnn:deep_learning:computer_vision:neural_networks:
+
+* Core Concept
+
+Convolutional Neural Networks (CNNs) are specialized neural networks designed to process grid-like data (images, video, time-series).
+
+Key Innovation: Use convolution operations to automatically learn hierarchical feature representations from raw pixels.
+
+* Why CNNs for Computer Vision?
+
+** Problems with Fully-Connected Networks
+- Too many parameters (image 224x224x3 = 150,528 inputs)
+- No spatial structure preservation
+- Not translation invariant
+- Computationally prohibitive
+
+** CNN Advantages
+- Parameter sharing through convolution kernels
+- Local connectivity (exploit spatial structure)
+- Translation equivariance
+- Hierarchical feature learning
+
+* Core Building Blocks
+
+** 1. Convolutional Layer
+Primary feature extraction mechanism
+
+*** Operation
+- Slide learnable filter (kernel) across input
+- Compute dot product at each position
+- Produce activation map (feature map)
+- See [[id:20251015130200-convolution_operations][Convolution Operations]]
+
+*** Parameters
+- Kernel size: e.g., 3x3, 5x5, 7x7
+- Stride: Step size for sliding
+- Padding: Border handling (same, valid)
+- Number of filters: Depth of output
+
+*** Mathematical Formulation
+Output[i,j] = sum(Input[i:i+k, j:j+k] * Kernel) + bias
+
+** 2. Activation Functions
+Introduce non-linearity (enable learning complex patterns)
+
+*** ReLU (Rectified Linear Unit)
+f(x) = max(0, x)
+- Most common in CNNs
+- Computationally efficient
+- Helps with gradient flow
+- See [[id:20251015131100-activation_functions][Activation Functions]]
+
+*** Leaky ReLU
+f(x) = x if x > 0 else alpha*x
+- Addresses "dying ReLU" problem
+- Used in YOLO architectures
+
+*** SiLU/Swish
+f(x) = x * sigmoid(x)
+- Smooth, non-monotonic
+- Used in modern architectures (YOLOv5+)
+
+** 3. Pooling Layers
+Reduce spatial dimensions (downsampling)
+
+*** Max Pooling
+- Take maximum value in window (e.g., 2x2)
+- Preserves strongest activations
+- Provides translation invariance
+- Reduces computation
+
+*** Average Pooling
+- Take mean value in window
+- Smoother downsampling
+- Often used in global pooling
+
+*** Purpose
+- Reduce computational cost
+- Control overfitting
+- Increase receptive field
+- Build hierarchical representations
+
+** 4. Normalization Layers
+Stabilize training and improve convergence
+
+*** Batch Normalization
+- Normalize activations across mini-batch
+- Reduces internal covariate shift
+- Allows higher learning rates
+- See [[id:20251015131200-batch_normalization][Batch Normalization]]
+
+*** Layer Normalization
+- Normalize across features
+- Better for small batch sizes
+
+** 5. Fully-Connected Layers
+Final layers for classification/regression
+
+- Flatten spatial dimensions
+- Traditional neural network layers
+- Map features to output classes
+- Often replaced by global pooling in modern architectures
+
+* Hierarchical Feature Learning
+
+** Layer-wise Feature Abstraction
+
+*** Early Layers (Low-level features)
+- Edges and gradients
+- Colors and textures
+- Simple patterns
+- Small receptive field
+
+*** Middle Layers (Mid-level features)
+- Shapes and parts
+- Textures and patterns
+- Object components
+- Medium receptive field
+
+*** Deep Layers (High-level features)
+- Object categories
+- Semantic concepts
+- Scene understanding
+- Large receptive field
+
+** Receptive Field
+Area of input image that affects particular neuron
+
+- Grows with depth
+- Affected by kernel size, stride, pooling
+- Critical for capturing context
+
+Formula (simplified):
+RF_l = RF_(l-1) + (kernel_size - 1) * product(strides up to l-1)
+
+* Common CNN Architectures
+
+** Historical Evolution
+
+*** LeNet-5 (1998)
+- First successful CNN
+- Digit recognition
+- 7 layers
+
+*** AlexNet (2012)
+- ImageNet breakthrough
+- 8 layers
+- ReLU, dropout, data augmentation
+
+*** VGGNet (2014)
+- Deep (16-19 layers)
+- Small 3x3 kernels
+- Simple architecture
+
+*** ResNet (2015)
+- Skip connections (residual learning)
+- Very deep (50-152 layers)
+- Solved vanishing gradient problem
+
+*** Modern Architectures
+- EfficientNet: Compound scaling
+- MobileNet: Efficient for mobile
+- Vision Transformers: Attention-based
+
+* CNN in Object Detection
+
+** Backbone Role
+CNNs serve as feature extractors (backbone) in detection networks:
+
+- Extract multi-scale features
+- Provide semantic information
+- Transfer learning from ImageNet
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+** Feature Pyramid
+- Combine features from multiple layers
+- Different resolutions for different object sizes
+- See [[id:20251015130800-feature_pyramid_networks][Feature Pyramid Networks]]
+
+* Training CNNs
+
+** Forward Pass
+1. Input image through convolution layers
+2. Apply activation functions
+3. Pooling for downsampling
+4. Fully-connected layers for output
+5. Loss computation
+
+** Backward Pass (Backpropagation)
+1. Compute gradients via chain rule
+2. Update weights using optimizer
+3. Gradient descent variants (SGD, Adam, etc.)
+
+** Key Techniques
+
+*** Data Augmentation
+- Random crops, flips, rotations
+- Color jittering
+- Mixup, CutMix
+- Prevents overfitting
+
+*** Transfer Learning
+- Pre-train on large dataset (ImageNet)
+- Fine-tune on target task
+- Reduces training time
+- Better performance with limited data
+
+*** Regularization
+- Dropout: Random neuron deactivation
+- L2 weight decay
+- Early stopping
+- Batch normalization
+
+* Computational Considerations
+
+** Parameter Count
+Conv layer: (kernel_h * kernel_w * in_channels + 1) * out_channels
+
+** FLOPs (Floating Point Operations)
+Conv layer: (kernel_h * kernel_w * in_channels * out_channels) * output_h * output_w
+
+** Memory Usage
+- Activations dominate during forward pass
+- Gradients dominate during backward pass
+- Trade-off: Batch size vs memory
+
+* CNN Limitations
+
+** Lack of Spatial Relationship Encoding
+- No explicit position information
+- Addressed by positional encodings (transformers)
+
+** Limited Receptive Field
+- Need deep networks for global context
+- Computationally expensive
+
+** Translation Equivariance but not Invariance
+- Small shifts change output slightly
+- Pooling provides some invariance
+
+* Related Concepts
+
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130200-convolution_operations][Convolution Operations]]
+- [[id:20251015130300-object_detection_paradigms][Object Detection Paradigms]]
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+* Footnotes
+
+[fn:1] LeCun et al., "Gradient-Based Learning Applied to Document Recognition" (1998)
+
+[fn:2] Modern CNNs can have 100+ layers with millions of parameters
+
+[fn:3] ImageNet pre-training provides strong initialization for most vision tasks

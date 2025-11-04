@@ -1,0 +1,276 @@
+#+TITLE: YOLO Label Format
+#+DATE: 2025-10-16 20:01
+#+TAGS: :annotation: :yolo: :format:
+#+ID: 20251016200100
+
+:PROPERTIES:
+:ID:       20251016200100
+:ROAM_ALIASES: "YOLO Annotation Format" "YOLO .txt Format" "Ultralytics Format"
+:END:
+
+* Overview
+
+YOLO (You Only Look Once) uses a simple text-based format for storing bounding box annotations. Each image has a corresponding .txt file with the same name containing all object annotations in that image.
+
+* File Structure
+
+** Basic Layout
+
+- One .txt file per image
+- Same filename as image (e.g., image001.jpg -> image001.txt)
+- One line per object in the image
+- Space-separated values
+- Plain ASCII text
+
+** Line Format
+
+#+BEGIN_EXAMPLE
+<class_id> <x_center> <y_center> <width> <height>
+#+END_EXAMPLE
+
+*Components*:
+1. class_id: Integer class index (0-based)
+2. x_center: Normalized X coordinate of box center (0-1 range)
+3. y_center: Normalized Y coordinate of box center (0-1 range)
+4. width: Normalized box width (0-1 range)
+5. height: Normalized box height (0-1 range)
+
+* Coordinate Normalization
+
+All spatial coordinates are *normalized* to the range [0, 1] by dividing by image dimensions:
+
+#+BEGIN_SRC python
+# Normalize coordinates
+x_center_norm = x_center_pixels / image_width
+y_center_norm = y_center_pixels / image_height
+width_norm = box_width_pixels / image_width
+height_norm = box_height_pixels / image_height
+#+END_SRC
+
+*Why normalized?*
+- Resolution independence
+- Works with any image size
+- No need to store image dimensions
+- Model can train on mixed resolutions
+
+* Example Label File
+
+** Example: person.txt
+
+#+BEGIN_EXAMPLE
+0 0.515625 0.428125 0.312500 0.625000
+0 0.812500 0.390625 0.187500 0.468750
+2 0.234375 0.156250 0.093750 0.125000
+#+END_EXAMPLE
+
+*Interpretation* (assuming 640x640 image):
+- Line 1: Class 0 (person) centered at (330, 274), size 200x400
+- Line 2: Class 0 (person) centered at (520, 250), size 120x300
+- Line 3: Class 2 (chair) centered at (150, 100), size 60x80
+
+* Dataset Directory Structure
+
+YOLO expects a specific directory structure:
+
+#+BEGIN_EXAMPLE
+dataset/
+|-- images/
+|   |-- train/
+|   |   |-- image001.jpg
+|   |   |-- image002.jpg
+|   |   `-- ...
+|   `-- val/
+|       |-- image100.jpg
+|       `-- ...
+|-- labels/
+|   |-- train/
+|   |   |-- image001.txt
+|   |   |-- image002.txt
+|   |   `-- ...
+|   `-- val/
+|       |-- image100.txt
+|       `-- ...
+`-- data.yaml
+#+END_EXAMPLE
+
+* data.yaml Configuration
+
+The data.yaml file defines dataset structure and classes:
+
+#+BEGIN_SRC yaml
+# Dataset paths
+path: /path/to/dataset
+train: images/train
+val: images/val
+test: images/test  # optional
+
+# Classes
+names:
+  0: person
+  1: bicycle
+  2: car
+  3: motorcycle
+  # ... more classes
+
+# Number of classes
+nc: 80
+#+END_SRC
+
+* Converting from Absolute to YOLO Format
+
+#+BEGIN_SRC python
+def xyxy_to_yolo_format(bbox, img_width, img_height):
+    """
+    Convert absolute XYXY coordinates to YOLO format.
+
+    Args:
+        bbox: [x1, y1, x2, y2] in pixels
+        img_width: Image width in pixels
+        img_height: Image height in pixels
+
+    Returns:
+        [x_center, y_center, width, height] normalized to [0, 1]
+    """
+    x1, y1, x2, y2 = bbox
+
+    # Calculate center and dimensions
+    x_center = (x1 + x2) / 2.0
+    y_center = (y1 + y2) / 2.0
+    width = x2 - x1
+    height = y2 - y1
+
+    # Normalize to [0, 1]
+    x_center_norm = x_center / img_width
+    y_center_norm = y_center / img_height
+    width_norm = width / img_width
+    height_norm = height / img_height
+
+    return [x_center_norm, y_center_norm, width_norm, height_norm]
+#+END_SRC
+
+* Converting from YOLO Format to Absolute
+
+#+BEGIN_SRC python
+def yolo_format_to_xyxy(bbox, img_width, img_height):
+    """
+    Convert YOLO format to absolute XYXY coordinates.
+
+    Args:
+        bbox: [x_center, y_center, width, height] normalized
+        img_width: Image width in pixels
+        img_height: Image height in pixels
+
+    Returns:
+        [x1, y1, x2, y2] in pixels
+    """
+    x_center_norm, y_center_norm, width_norm, height_norm = bbox
+
+    # Denormalize
+    x_center = x_center_norm * img_width
+    y_center = y_center_norm * img_height
+    width = width_norm * img_width
+    height = height_norm * img_height
+
+    # Convert to corners
+    x1 = x_center - width / 2
+    y1 = y_center - height / 2
+    x2 = x_center + width / 2
+    y2 = y_center + height / 2
+
+    return [x1, y1, x2, y2]
+#+END_SRC
+
+* Writing YOLO Label Files
+
+#+BEGIN_SRC python
+def write_yolo_label(detections, output_path, img_width, img_height):
+    """
+    Write detections to YOLO format label file.
+
+    Args:
+        detections: List of (class_id, bbox_xyxy) tuples
+        output_path: Path to output .txt file
+        img_width: Image width
+        img_height: Image height
+    """
+    with open(output_path, 'w') as f:
+        for class_id, bbox_xyxy in detections:
+            # Convert to YOLO format
+            bbox_yolo = xyxy_to_yolo_format(bbox_xyxy, img_width, img_height)
+
+            # Write line: class_id x_center y_center width height
+            line = f"{class_id} {' '.join(f'{v:.6f}' for v in bbox_yolo)}\n"
+            f.write(line)
+#+END_SRC
+
+* Usage in CV-Project
+
+The CV-Project currently uses YOLOv8x-OIV7 for *inference only*. The model was pre-trained on Open Images v7 dataset.
+
+** Current State
+- No label files stored in codebase (inference-only system)
+- Model loaded from: yolov8x-oiv7.pt
+- Classes defined in: data.yaml (600+ classes)
+- Detection output converted from YOLO's XYXY to other formats
+
+** Future Training Workflow
+If custom training is needed:
+1. Annotate images using CVAT (see [[id:20251016200200][CVAT Annotation Workflow]])
+2. Export from CVAT in YOLO format
+3. Organize into images/labels structure
+4. Create data.yaml with custom classes
+5. Train using: =yolo train data=data.yaml model=yolov8x.pt=
+
+* Common Issues and Solutions
+
+** Issue: Coordinates Outside [0, 1] Range
+*Cause*: Bounding box extends beyond image boundaries
+*Solution*: Clip values to [0, 1] range
+
+#+BEGIN_SRC python
+x_center = max(0, min(1, x_center))
+y_center = max(0, min(1, y_center))
+width = max(0, min(1, width))
+height = max(0, min(1, height))
+#+END_SRC
+
+** Issue: Width or Height = 0
+*Cause*: Invalid bounding box
+*Solution*: Filter out boxes with zero area before writing
+
+** Issue: Mismatched Image/Label Files
+*Cause*: Missing .txt file or wrong filename
+*Solution*: Verify filename correspondence, empty .txt for images with no objects
+
+* Validation Script
+
+#+BEGIN_SRC python
+def validate_yolo_labels(label_dir):
+    """Validate YOLO label files for common errors."""
+    for label_file in Path(label_dir).glob("*.txt"):
+        with open(label_file, 'r') as f:
+            for i, line in enumerate(f, 1):
+                parts = line.strip().split()
+
+                if len(parts) != 5:
+                    print(f"Error in {label_file} line {i}: Expected 5 values")
+                    continue
+
+                class_id, x, y, w, h = map(float, parts)
+
+                # Check ranges
+                if not (0 <= x <= 1 and 0 <= y <= 1):
+                    print(f"Warning in {label_file} line {i}: Center out of range")
+
+                if not (0 < w <= 1 and 0 < h <= 1):
+                    print(f"Warning in {label_file} line {i}: Size out of range")
+#+END_SRC
+
+* Related Notes
+
+- [[id:20251016200000][Bounding Box Formats]] - Different bbox representations
+- [[id:20251016200400][CVAT YOLO Integration]] - Exporting from CVAT to YOLO format
+- [[id:20251016200300][Annotation Formats Comparison]] - YOLO vs other formats
+- [[id:20251016200500][Open Images v7 Dataset]] - Current dataset used in project
+- [[id:20251016200700][Bounding Box Coordinate Conversions]] - Conversion utilities
+- [[id:20251016201000][Annotation and Training MOC]] - Central annotation hub

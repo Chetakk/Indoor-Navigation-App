@@ -1,0 +1,109 @@
+#+TITLE: CVAT Overview and Features
+#+DATE: 2025-10-16 19:00
+#+TAGS: :cvat: :annotation: :tools:
+#+ID: 20251016190000
+
+:PROPERTIES:
+:ID:       20251016190000
+:ROAM_ALIASES: "CVAT" "Computer Vision Annotation Tool" "Intel CVAT"
+:END:
+
+* Overview
+
+CVAT (Computer Vision Annotation Tool) is an open-source, web-based annotation platform developed by Intel. It provides a comprehensive environment for annotating images and videos for computer vision tasks.
+
+* Core Features
+
+** Multi-Format Support
+- Supports multiple annotation types: bounding boxes, polygons, polylines, points, cuboids, skeletons
+- Import/export in various formats: YOLO[fn:1], COCO[fn:2], Pascal VOC[fn:3], TFRecord, etc.
+- Video annotation with frame interpolation
+
+See [[id:20251016200300][Annotation Formats Comparison]] for detailed format comparison.
+
+** Collaboration Features
+- Multi-user support with role-based access control
+- Task assignment and management
+- Quality control through annotation review workflow
+- Real-time collaboration on annotation tasks
+
+** Advanced Capabilities
+- Automatic annotation using pre-trained models
+- Semi-automatic annotation with tracking algorithms
+- Keyboard shortcuts for rapid annotation
+- Annotation versioning and history
+- Custom attribute definitions for objects
+
+* Architecture
+
+** Components
+- Web-based frontend (React)
+- REST API backend (Django)
+- PostgreSQL database for metadata
+- File storage for images/videos
+- Optional: GPU support for auto-annotation models
+
+** Deployment Options
+- Docker containers (recommended)
+- Kubernetes for scaling
+- Cloud deployment (AWS, Azure, GCP)
+- On-premise installation
+
+* Use Cases for CV Project
+
+** Current Application
+Our indoor navigation project uses YOLOv8x for object detection. CVAT could be used for:
+- Creating custom training datasets for indoor objects
+- Fine-tuning YOLO on specific furniture/obstacle classes
+- Annotating edge cases for model improvement
+- Building validation datasets for accuracy testing
+
+** Integration Points
+- Export annotations in YOLO format[fn:1] for training - see [[id:20251016200400][CVAT YOLO Integration]]
+- Validate detection accuracy against ground truth
+- Collect user feedback through annotation interface
+- Build domain-specific datasets (indoor navigation scenarios)
+- Apply augmentation using utilities/augScript.py - see [[id:20251016200800][Dataset Augmentation Strategies]]
+
+** Complete Workflow
+
+For step-by-step guide, see [[id:20251016200200][CVAT Annotation Workflow]].
+
+* Advantages
+
+- Free and open-source
+- Active community and regular updates
+- Extensive format support
+- Scalable for large annotation projects
+- Built-in quality control mechanisms
+- GPU-accelerated auto-annotation
+
+* Limitations
+
+- Requires server infrastructure for deployment
+- Learning curve for advanced features
+- Resource-intensive for large video files
+- Requires manual setup for custom models
+
+* Related Notes
+
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub for all annotation topics
+- [[id:20251016200200][CVAT Annotation Workflow]] - Step-by-step usage guide
+- [[id:20251016200400][CVAT YOLO Integration]] - Exporting to YOLO format
+- [[id:20251016200900][Annotation Tools Comparison]] - CVAT vs alternatives
+- [[id:20251016200600][Annotation Quality Guidelines]] - Quality standards
+- [[id:20251016200300][Annotation Formats Comparison]] - Format details
+- [[id:20251016200100][YOLO Label Format]] - YOLO format specification
+- [[id:20251016200000][Bounding Box Formats]] - Bbox representations
+
+* References
+
+- Official CVAT Documentation: https://opencv.github.io/cvat/
+- GitHub Repository: https://github.com/opencv/cvat
+- Intel AI Blog on CVAT features
+
+* Footnotes
+
+[fn:1] See [[id:20251016200100][YOLO Label Format]] for detailed YOLO format specification
+[fn:2] COCO format details in [[id:20251016200300][Annotation Formats Comparison]]
+[fn:3] Pascal VOC format details in [[id:20251016200300][Annotation Formats Comparison]]

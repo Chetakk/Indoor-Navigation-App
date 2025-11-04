@@ -1,0 +1,483 @@
+#+TITLE: CVAT YOLO Integration
+#+DATE: 2025-10-16 20:04
+#+TAGS: :annotation: :cvat: :yolo: :workflow:
+#+ID: 20251016200400
+
+:PROPERTIES:
+:ID:       20251016200400
+:ROAM_ALIASES: "CVAT Export" "YOLO Training Pipeline" "Dataset Preparation"
+:END:
+
+* Overview
+
+This note describes how to export annotations from CVAT in YOLO format and prepare them for YOLOv8 training in the CV-Project pipeline.
+
+* CVAT Export Process
+
+** Export Settings
+
+1. Navigate to task page in CVAT
+2. Click "Actions" dropdown
+3. Select "Export annotations"
+4. Choose format: *YOLO 1.1*
+5. Click "OK" to download
+
+** Export Contents
+
+The downloaded .zip file contains:
+
+#+BEGIN_EXAMPLE
+export.zip
+|-- obj_train_data/
+|   |-- image001.jpg
+|   |-- image001.txt
+|   |-- image002.jpg
+|   |-- image002.txt
+|   `-- ...
+`-- obj.names
+#+END_EXAMPLE
+
+*Files*:
+- =obj_train_data/=: Images with corresponding .txt label files
+- =obj.names=: Class names (one per line, order matches class IDs)
+
+* Reorganizing Export for YOLO Training
+
+** Required Directory Structure
+
+YOLOv8 expects this structure:
+
+#+BEGIN_EXAMPLE
+dataset/
+|-- images/
+|   |-- train/
+|   |   |-- image001.jpg
+|   |   |-- image002.jpg
+|   |   `-- ...
+|   `-- val/
+|       |-- image100.jpg
+|       `-- ...
+|-- labels/
+|   |-- train/
+|   |   |-- image001.txt
+|   |   |-- image002.txt
+|   |   `-- ...
+|   `-- val/
+|       |-- image100.txt
+|       `-- ...
+`-- data.yaml
+#+END_EXAMPLE
+
+** Reorganization Script
+
+#+BEGIN_SRC python
+import shutil
+from pathlib import Path
+import random
+
+def reorganize_cvat_export(export_dir, output_dir, train_ratio=0.8, seed=42):
+    """
+    Reorganize CVAT export into YOLO training structure.
+
+    Args:
+        export_dir: Path to extracted CVAT export
+        output_dir: Path to output dataset directory
+        train_ratio: Fraction of data for training (default: 0.8)
+        seed: Random seed for reproducibility
+    """
+    random.seed(seed)
+
+    export_path = Path(export_dir)
+    output_path = Path(output_dir)
+
+    # Create directory structure
+    for split in ['train', 'val']:
+        (output_path / 'images' / split).mkdir(parents=True, exist_ok=True)
+        (output_path / 'labels' / split).mkdir(parents=True, exist_ok=True)
+
+    # Get all image files
+    obj_data_dir = export_path / 'obj_train_data'
+    image_files = list(obj_data_dir.glob('*.jpg'))
+    image_files.extend(obj_data_dir.glob('*.png'))
+
+    # Shuffle for random split
+    random.shuffle(image_files)
+
+    # Split into train/val
+    split_idx = int(len(image_files) * train_ratio)
+    train_images = image_files[:split_idx]
+    val_images = image_files[split_idx:]
+
+    print(f"Total images: {len(image_files)}")
+    print(f"Training: {len(train_images)} ({len(train_images)/len(image_files):.1%})")
+    print(f"Validation: {len(val_images)} ({len(val_images)/len(image_files):.1%})")
+
+    # Copy files
+    for img_file in train_images:
+        # Copy image
+        shutil.copy(img_file, output_path / 'images' / 'train' / img_file.name)
+
+        # Copy corresponding label
+        label_file = img_file.with_suffix('.txt')
+        if label_file.exists():
+            shutil.copy(label_file, output_path / 'labels' / 'train' / label_file.name)
+
+    for img_file in val_images:
+        shutil.copy(img_file, output_path / 'images' / 'val' / img_file.name)
+
+        label_file = img_file.with_suffix('.txt')
+        if label_file.exists():
+            shutil.copy(label_file, output_path / 'labels' / 'val' / label_file.name)
+
+    # Copy obj.names
+    if (export_path / 'obj.names').exists():
+        shutil.copy(export_path / 'obj.names', output_path / 'classes.txt')
+
+    print(f"\nDataset prepared at: {output_path}")
+
+# Usage
+reorganize_cvat_export('cvat_export', 'yolo_dataset')
+#+END_SRC
+
+* Creating data.yaml
+
+** Manual Creation
+
+Create =data.yaml= in dataset root:
+
+#+BEGIN_SRC yaml
+# Dataset paths
+path: /absolute/path/to/dataset  # dataset root dir
+train: images/train  # train images (relative to 'path')
+val: images/val      # val images (relative to 'path')
+
+# Classes
+names:
+  0: person
+  1: chair
+  2: table
+  3: sofa
+  4: door
+  5: stairs
+  6: wall
+  7: cabinet
+  8: plant
+
+# Number of classes
+nc: 9
+#+END_SRC
+
+** Automated Script
+
+#+BEGIN_SRC python
+import yaml
+from pathlib import Path
+
+def create_data_yaml(dataset_dir, class_names_file):
+    """
+    Create data.yaml from CVAT obj.names file.
+
+    Args:
+        dataset_dir: Path to dataset directory
+        class_names_file: Path to obj.names or classes.txt
+    """
+    dataset_path = Path(dataset_dir).absolute()
+
+    # Read class names
+    with open(class_names_file, 'r') as f:
+        class_names = [line.strip() for line in f if line.strip()]
+
+    # Create data.yaml structure
+    data = {
+        'path': str(dataset_path),
+        'train': 'images/train',
+        'val': 'images/val',
+        'names': {i: name for i, name in enumerate(class_names)},
+        'nc': len(class_names)
+    }
+
+    # Write data.yaml
+    output_file = dataset_path / 'data.yaml'
+    with open(output_file, 'w') as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    print(f"Created data.yaml with {len(class_names)} classes")
+    print(f"Output: {output_file}")
+
+# Usage
+create_data_yaml('yolo_dataset', 'yolo_dataset/classes.txt')
+#+END_SRC
+
+* Complete Pipeline Script
+
+Combine everything into single script:
+
+#+BEGIN_SRC python
+#!/usr/bin/env python3
+"""
+Complete CVAT to YOLO conversion pipeline.
+Usage: python cvat_to_yolo.py cvat_export.zip yolo_dataset
+"""
+
+import zipfile
+import shutil
+from pathlib import Path
+import random
+import yaml
+import argparse
+
+def extract_cvat_export(zip_path, extract_to='temp_extract'):
+    """Extract CVAT export zip file."""
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
+    return Path(extract_to)
+
+def reorganize_and_split(export_dir, output_dir, train_ratio=0.8, seed=42):
+    """Reorganize and split dataset."""
+    random.seed(seed)
+
+    export_path = Path(export_dir)
+    output_path = Path(output_dir)
+
+    # Create structure
+    for split in ['train', 'val']:
+        (output_path / 'images' / split).mkdir(parents=True, exist_ok=True)
+        (output_path / 'labels' / split).mkdir(parents=True, exist_ok=True)
+
+    # Find obj_train_data directory
+    obj_data_dir = export_path / 'obj_train_data'
+    if not obj_data_dir.exists():
+        # Try to find it recursively
+        obj_data_dirs = list(export_path.rglob('obj_train_data'))
+        if obj_data_dirs:
+            obj_data_dir = obj_data_dirs[0]
+        else:
+            raise FileNotFoundError("Could not find obj_train_data directory")
+
+    # Get image files
+    image_files = list(obj_data_dir.glob('*.jpg'))
+    image_files.extend(obj_data_dir.glob('*.png'))
+
+    if not image_files:
+        raise ValueError("No images found in export")
+
+    random.shuffle(image_files)
+
+    # Split
+    split_idx = int(len(image_files) * train_ratio)
+    splits = {
+        'train': image_files[:split_idx],
+        'val': image_files[split_idx:]
+    }
+
+    print(f"\nSplitting dataset:")
+    print(f"  Total: {len(image_files)}")
+    print(f"  Train: {len(splits['train'])} ({len(splits['train'])/len(image_files):.1%})")
+    print(f"  Val: {len(splits['val'])} ({len(splits['val'])/len(image_files):.1%})")
+
+    # Copy files
+    for split_name, img_files in splits.items():
+        for img_file in img_files:
+            # Copy image
+            shutil.copy(img_file,
+                       output_path / 'images' / split_name / img_file.name)
+
+            # Copy label
+            label_file = img_file.with_suffix('.txt')
+            if label_file.exists():
+                shutil.copy(label_file,
+                           output_path / 'labels' / split_name / label_file.name)
+
+    # Copy class names
+    obj_names = export_path / 'obj.names'
+    if not obj_names.exists():
+        obj_names_list = list(export_path.rglob('obj.names'))
+        if obj_names_list:
+            obj_names = obj_names_list[0]
+
+    if obj_names.exists():
+        shutil.copy(obj_names, output_path / 'classes.txt')
+        return obj_names
+    else:
+        print("Warning: obj.names not found")
+        return None
+
+def create_data_yaml(dataset_dir, class_names_file):
+    """Create data.yaml configuration."""
+    dataset_path = Path(dataset_dir).absolute()
+
+    # Read class names
+    with open(class_names_file, 'r') as f:
+        class_names = [line.strip() for line in f if line.strip()]
+
+    # Create config
+    data = {
+        'path': str(dataset_path),
+        'train': 'images/train',
+        'val': 'images/val',
+        'names': {i: name for i, name in enumerate(class_names)},
+        'nc': len(class_names)
+    }
+
+    # Write file
+    output_file = dataset_path / 'data.yaml'
+    with open(output_file, 'w') as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    print(f"\nCreated data.yaml:")
+    print(f"  Classes: {len(class_names)}")
+    print(f"  Path: {output_file}")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Convert CVAT export to YOLO format')
+    parser.add_argument('cvat_export', help='CVAT export zip file')
+    parser.add_argument('output_dir', help='Output dataset directory')
+    parser.add_argument('--train-ratio', type=float, default=0.8,
+                       help='Training set ratio (default: 0.8)')
+    parser.add_argument('--seed', type=int, default=42,
+                       help='Random seed (default: 42)')
+
+    args = parser.parse_args()
+
+    print("=" * 60)
+    print("CVAT to YOLO Conversion Pipeline")
+    print("=" * 60)
+
+    # Extract
+    print("\n[1/3] Extracting CVAT export...")
+    extract_dir = extract_cvat_export(args.cvat_export)
+
+    # Reorganize
+    print("\n[2/3] Reorganizing dataset...")
+    class_names_file = reorganize_and_split(
+        extract_dir, args.output_dir, args.train_ratio, args.seed)
+
+    # Create data.yaml
+    if class_names_file:
+        print("\n[3/3] Creating data.yaml...")
+        create_data_yaml(args.output_dir, class_names_file)
+
+    # Cleanup
+    shutil.rmtree(extract_dir)
+
+    print("\n" + "=" * 60)
+    print("Conversion complete!")
+    print(f"Dataset ready at: {Path(args.output_dir).absolute()}")
+    print("=" * 60)
+
+if __name__ == '__main__':
+    main()
+#+END_SRC
+
+* Using with YOLOv8 Training
+
+Once dataset is prepared:
+
+#+BEGIN_SRC bash
+# Install ultralytics
+pip install ultralytics
+
+# Train from scratch
+yolo train data=yolo_dataset/data.yaml model=yolov8n.yaml epochs=100
+
+# Fine-tune from pretrained
+yolo train data=yolo_dataset/data.yaml model=yolov8x-oiv7.pt epochs=50
+
+# Resume training
+yolo train resume model=runs/detect/train/weights/last.pt
+#+END_SRC
+
+* Validation and Testing
+
+** Validate Dataset
+
+#+BEGIN_SRC python
+from pathlib import Path
+
+def validate_yolo_dataset(dataset_dir):
+    """Check dataset integrity."""
+    dataset_path = Path(dataset_dir)
+
+    errors = []
+
+    for split in ['train', 'val']:
+        img_dir = dataset_path / 'images' / split
+        label_dir = dataset_path / 'labels' / split
+
+        if not img_dir.exists():
+            errors.append(f"Missing: {img_dir}")
+            continue
+
+        images = list(img_dir.glob('*.jpg')) + list(img_dir.glob('*.png'))
+        labels = list(label_dir.glob('*.txt'))
+
+        print(f"\n{split.upper()}:")
+        print(f"  Images: {len(images)}")
+        print(f"  Labels: {len(labels)}")
+
+        # Check for missing labels
+        for img in images:
+            label = label_dir / f"{img.stem}.txt"
+            if not label.exists():
+                errors.append(f"Missing label: {label}")
+
+    # Check data.yaml
+    data_yaml = dataset_path / 'data.yaml'
+    if not data_yaml.exists():
+        errors.append(f"Missing: {data_yaml}")
+
+    if errors:
+        print("\nERRORS FOUND:")
+        for error in errors:
+            print(f"  - {error}")
+        return False
+    else:
+        print("\nDataset validation PASSED!")
+        return True
+
+validate_yolo_dataset('yolo_dataset')
+#+END_SRC
+
+** Test Inference
+
+#+BEGIN_SRC python
+from ultralytics import YOLO
+
+# Load model
+model = YOLO('runs/detect/train/weights/best.pt')
+
+# Run inference on validation set
+results = model.val(data='yolo_dataset/data.yaml')
+
+print(f"mAP50: {results.box.map50}")
+print(f"mAP50-95: {results.box.map}")
+#+END_SRC
+
+* Integration with CV-Project Augmentation
+
+After CVAT export, apply augmentation:
+
+#+BEGIN_SRC bash
+# 1. Convert CVAT export to YOLO format
+python cvat_to_yolo.py cvat_export.zip base_dataset
+
+# 2. Apply augmentation (from utilities/augScript.py)
+python ../utilities/augScript.py base_dataset/images/train \
+    augmented_dataset --augmentation_factor 5 --train_ratio 0.8
+
+# 3. Combine or replace training data
+# (Move augmented images/labels to final dataset)
+
+# 4. Train YOLOv8
+yolo train data=final_dataset/data.yaml model=yolov8x-oiv7.pt epochs=50
+#+END_SRC
+
+* Related Notes
+
+- [[id:20251016200200][CVAT Annotation Workflow]] - Creating annotations in CVAT
+- [[id:20251016200100][YOLO Label Format]] - Understanding YOLO format
+- [[id:20251016200800][Dataset Augmentation Strategies]] - Augmentation pipeline
+- [[id:20251016200300][Annotation Formats Comparison]] - Format details
+- [[id:20251016200500][Open Images v7 Dataset]] - Base model for fine-tuning
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

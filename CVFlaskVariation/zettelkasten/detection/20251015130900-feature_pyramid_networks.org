@@ -1,0 +1,676 @@
+:PROPERTIES:
+:ID:       20251015130800-feature_pyramid_networks
+:ROAM_ALIASES: "FPN" "Feature Pyramid" "Multi-Scale Features"
+:END:
+#+title: Feature Pyramid Networks
+#+filetags: :fpn:multi_scale:architecture:feature_aggregation:
+
+* Core Concept
+
+Feature Pyramid Networks (FPN) combine multi-scale features from different backbone layers to create rich feature representations at multiple resolutions.
+
+Key Innovation: Top-down pathway with lateral connections merges semantic (deep) and spatial (shallow) information.
+
+* Why Multi-Scale Features?
+
+** Object Size Variation
+Objects appear at vastly different scales:
+- Small: Person far away (32x32 pixels)
+- Medium: Person nearby (128x128 pixels)
+- Large: Person close-up (512x512 pixels)
+
+Single-scale features struggle:
+- Deep features: Good semantics, poor localization
+- Shallow features: Good localization, poor semantics
+
+** Solution: Feature Pyramid
+Use features from multiple backbone layers:
+- High-resolution + low semantics (early layers)
+- Low-resolution + high semantics (deep layers)
+- Combine strengths of both
+
+* Traditional Approaches
+
+** 1. Featurized Image Pyramid
+Build pyramid of input images:
+```
+Original -> Detect
+Scale 0.5 -> Detect
+Scale 0.25 -> Detect
+```
+
+Problems:
+- 3x images = 3x computation
+- Very slow
+- Memory intensive
+
+** 2. Single Scale (Fast R-CNN)
+Use only deepest layer:
+- Fast (single forward pass)
+- Poor for multi-scale objects
+- Misses small objects
+
+** 3. Pyramidal Feature Hierarchy (SSD)
+Predictions at multiple layers:
+```
+Conv4_3 (38x38) -> Detect large objects
+Conv7 (19x19) -> Detect medium objects
+Conv8_2 (10x10) -> Detect small objects
+```
+
+Better but:
+- No information flow between scales
+- Shallow layers have weak semantics
+- Not optimal
+
+* FPN Architecture
+
+** Bottom-Up Pathway (Backbone)
+Standard CNN feature extraction:
+```
+Input (640x640)
+    |
+    v
+C1: 320x320 (stride 2)
+    |
+    v
+C2: 160x160 (stride 4)
+    |
+    v
+C3: 80x80 (stride 8)
+    |
+    v
+C4: 40x40 (stride 16)
+    |
+    v
+C5: 20x20 (stride 32)
+```
+
+** Top-Down Pathway
+Upsample and merge:
+```
+C5 (20x20, 2048ch)
+    |
+Upsample (40x40) + C4 lateral -> P4 (40x40, 256ch)
+    |
+Upsample (80x80) + C3 lateral -> P3 (80x80, 256ch)
+    |
+Upsample (160x160) + C2 lateral -> P2 (160x160, 256ch)
+```
+
+** Lateral Connections
+1x1 convolutions reduce channels:
+```
+C5: 2048ch -> 1x1 conv -> 256ch -> P5
+C4: 1024ch -> 1x1 conv -> 256ch -+-> P4
+                                   |
+                    (upsample P5) -+
+
+C3: 512ch -> 1x1 conv -> 256ch -+-> P3
+                                 |
+                  (upsample P4) -+
+```
+
+** Upsampling
+Typically nearest-neighbor interpolation:
+- Simple and fast
+- 2x upsampling each step
+- Could use bilinear or transposed conv
+
+** Merging Operation
+Element-wise addition:
+```
+P_i = Upsample(P_{i+1}) + Lateral(C_i)
+```
+
+Optional 3x3 conv after merge:
+- Reduces aliasing artifacts
+- Smooths features
+
+* Mathematical Formulation
+
+** Lateral Connection
+```
+L_i = Conv_1x1(C_i)
+```
+- Reduces channels to common dimension (256)
+- Aligns channel counts for addition
+
+** Top-Down
+```
+T_i = Upsample(P_{i+1})
+```
+- 2x nearest-neighbor upsampling
+- Matches spatial dimensions
+
+** Feature Merge
+```
+P_i = L_i + T_i
+```
+- Element-wise addition
+- Combines spatial and semantic info
+
+** Final Features
+```
+P_i = Conv_3x3(P_i)
+```
+- Reduces aliasing from upsampling
+- Refines merged features
+
+* FPN in Object Detection
+
+** Prediction Heads
+Attach detection head to each pyramid level:
+```
+P2 (160x160) -> Head -> Small object predictions
+P3 (80x80)   -> Head -> Medium object predictions
+P4 (40x40)   -> Head -> Large object predictions
+P5 (20x20)   -> Head -> Very large predictions
+```
+
+** Anchor Assignment
+Assign objects to levels by size:
+```
+Small objects (area < 32^2) -> P2
+Medium (32^2 < area < 96^2) -> P3
+Large (96^2 < area < 192^2) -> P4
+Very large (area > 192^2)   -> P5
+```
+
+** Shared vs Separate Heads
+*** Shared (FPN Paper)
+- Same weights for all levels
+- Parameter efficient
+- Assumes scale invariance
+
+*** Separate
+- Different weights per level
+- More parameters
+- Can specialize per scale
+
+* Variants and Extensions
+
+** 1. PANet (Path Aggregation Network)
+Adds bottom-up pathway:
+```
+P2 -> P3 -> P4 -> P5 (FPN top-down)
+ |     |     |     |
+ v     v     v     v
+N2 <- N3 <- N4 <- N5 (PANet bottom-up)
+```
+
+Benefits:
+- Enhances localization
+- Shortens information path
+- Better feature propagation
+
+Used in: YOLOv4, YOLOv5, Mask R-CNN
+
+** 2. BiFPN (Bi-directional FPN)
+EfficientDet innovation:
+- Weighted feature fusion
+- Bi-directional connections
+- Remove nodes with single input
+- Repeat blocks multiple times
+
+Features:
+```
+Learnable weights:
+P_fused = w1*P_in + w2*P_up + w3*P_down
+Normalized: sum(weights) = 1
+```
+
+Benefits:
+- More efficient than PANet
+- Better accuracy
+- Learnable importance
+
+** 3. NAS-FPN
+Neural Architecture Search for FPN:
+- Automatically discover topology
+- Irregular connections
+- Better than hand-designed
+
+Trade-off:
+- Better performance
+- Complex to implement
+- Expensive to search
+
+** 4. AugFPN (Augmented FPN)
+Additional enhancements:
+- Residual feature augmentation
+- Soft RoI selection
+- Ratio-invariant adaptive pooling
+
+** 5. YOLO-Style Neck
+YOLOv3/v4/v5 approach:
+- FPN top-down pathway
+- PAN bottom-up pathway
+- SPP (Spatial Pyramid Pooling)
+- Multiple 3x3 convolutions
+
+Example (YOLOv5):
+```
+CSPDarknet backbone -> C3, C4, C5
+    |
+FPN: C5 -> P5 -> P4 -> P3
+    |
+PAN: P3 -> N3 -> N4 -> N5
+    |
+Outputs: N3, N4, N5 to detection heads
+```
+
+* Implementation Details
+
+** Channel Dimensions
+Standard: 256 channels throughout pyramid
+- Balance between capacity and efficiency
+- All levels same channels (simpler)
+
+YOLOv5: Variable channels by model size
+- Nano: 256 -> 128 -> 64
+- Large: 512 -> 1024 -> 1024
+
+** Output Levels
+Common choices:
+- P3, P4, P5 (3 levels): YOLO standard
+- P2, P3, P4, P5 (4 levels): More detail
+- P3, P4, P5, P6, P7 (5 levels): RetinaNet
+
+Trade-off:
+- More levels: Better multi-scale, slower
+- Fewer levels: Faster, may miss scales
+
+** Normalization
+Batch normalization after each conv:
+- Stabilizes training
+- Allows higher learning rates
+- Standard practice
+
+** Activation Functions
+ReLU or variants:
+- Leaky ReLU: YOLO preference
+- SiLU/Swish: Modern choice
+- See [[id:20251015131100-activation_functions][Activation Functions]]
+
+* Training Considerations
+
+** Gradient Flow
+FPN improves gradient flow:
+- Skip connections (lateral)
+- Multiple supervision points
+- Easier to train deep networks
+
+** Memory Usage
+Higher than single-scale:
+- Store multiple feature maps
+- Trade-off for better performance
+- Gradient checkpointing can help
+
+** Computational Cost
+Moderate increase:
+- Upsampling is cheap (interpolation)
+- 1x1 convs are efficient
+- 3x3 convs add some cost
+- Overall: ~10-20% overhead
+
+** Multi-Scale Training
+Train with varying input sizes:
+- 320, 416, 512, 608 pixels
+- Network adapts to multiple scales
+- Better generalization
+- YOLO commonly uses this
+
+* Advantages of FPN
+
+** 1. Multi-Scale Detection
+Single forward pass handles all scales:
+- No image pyramid needed
+- Efficient computation
+- Good for real-time
+
+** 2. Strong Semantics at All Scales
+Top-down pathway enriches all levels:
+- Small object features enhanced
+- Better classification
+- Reduced false positives
+
+** 3. Accurate Localization
+High-resolution features preserved:
+- Fine spatial details
+- Precise bounding boxes
+- Better for small objects
+
+** 4. End-to-End Training
+Fully differentiable:
+- Joint optimization
+- Features adapt to task
+- No separate stages
+
+* Limitations
+
+** Semantic Gap
+Different levels have different semantics:
+- Hard to perfectly align
+- Normalization helps but not perfect
+
+** Resolution Mismatch
+Upsampling introduces artifacts:
+- Aliasing effects
+- 3x3 conv helps smooth
+- Not as good as native resolution
+
+** Parameter Overhead
+Additional layers and connections:
+- More parameters (though 1x1 convs are light)
+- More computation
+- Larger model size
+
+** Memory Footprint
+Multiple feature maps in memory:
+- Training memory intensive
+- Limits batch size
+- Gradient checkpointing helps
+
+* Practical Guidelines
+
+** When to Use FPN
+Essential for:
+- Multi-scale objects (most real datasets)
+- Small object detection
+- High-accuracy requirements
+
+Optional for:
+- Single-scale objects (rare)
+- Speed-critical applications (lighter alternatives)
+
+** Configuration Tips
+- Start with 3 levels (P3, P4, P5)
+- Use 256 channels
+- Batch norm after each conv
+- 3x3 conv after merge to reduce aliasing
+
+** Debugging
+Check feature map scales:
+```python
+print(P2.shape)  # Should be 1/4 input
+print(P3.shape)  # Should be 1/8 input
+print(P4.shape)  # Should be 1/16 input
+```
+
+Visualize features:
+- Higher levels should have stronger activations
+- Check for dead neurons (all zeros)
+
+* FPN in YOLO
+
+** YOLOv3
+First YOLO with FPN:
+- Darknet-53 backbone
+- 3 detection scales
+- Simple FPN-style neck
+
+** YOLOv4/v5
+Enhanced neck:
+- SPP after backbone
+- FPN + PAN combination
+- CSP blocks for efficiency
+
+** YOLOv7
+E-ELAN innovations:
+- Extended Efficient Layer Aggregation Network
+- Optimized concatenations
+- Better gradient paths
+- Auxiliary heads for training
+
+** YOLOv8 (Current Project)[fn:4]
+Modern PAN-FPN neck with significant improvements over YOLOv5:
+
+*** Architecture Overview
+YOLOv8 uses a streamlined PAN-FPN neck:
+- Backbone outputs: P3 (1/8), P4 (1/16), P5 (1/32) from C2f modules
+- FPN top-down pathway with C2f modules (not C3)
+- PAN bottom-up pathway with C2f modules
+- SPPF (Spatial Pyramid Pooling - Fast) after backbone
+- Three detection heads at P3, P4, P5
+
+*** Detailed Structure (YOLOv8n example)
+
+**** Input from Backbone
+- P3: 128 channels, 80x80 resolution (from Stage 2)
+- P4: 256 channels, 40x40 resolution (from Stage 3)
+- P5: 512 channels, 20x20 resolution (from Stage 4)
+
+**** SPPF Module (After P5)
+Spatial Pyramid Pooling - Fast:
+```
+P5 (512ch) -> Conv 1x1 (256ch)
+              |
+              +-> MaxPool 5x5 -> MaxPool 5x5 -> MaxPool 5x5
+              |        |              |              |
+              +--------+--------------+--------------+
+                                      |
+                                   Concat (1024ch)
+                                      |
+                                   Conv 1x1 (512ch)
+```
+
+Benefits:
+- Increases receptive field without downsampling
+- Efficient (sequential pooling faster than parallel)
+- Captures multi-scale context
+- Only 3 pooling operations vs 4 in SPP
+
+**** FPN Top-Down Pathway
+From deepest to shallowest:
+
+1. P5 -> Upsample -> Concat with P4 -> C2f -> N4 (256ch, 40x40)
+2. N4 -> Upsample -> Concat with P3 -> C2f -> N3 (128ch, 80x80)
+
+Details:
+- Upsample: Nearest-neighbor 2x
+- Concat: Channel-wise concatenation (not addition like classic FPN)
+- C2f: Replaces YOLOv5's C3, more gradient paths
+
+**** PAN Bottom-Up Pathway
+From shallowest to deepest:
+
+1. N3 -> Conv 3x3 stride=2 -> Concat with N4 -> C2f -> N4' (256ch, 40x40)
+2. N4' -> Conv 3x3 stride=2 -> Concat with P5 -> C2f -> N5 (512ch, 20x20)
+
+Details:
+- Downsampling: Strided convolution (learnable)
+- Concat: Channel-wise concatenation
+- Enhances localization features from high-resolution
+
+**** Detection Heads (Decoupled Heads)
+Three parallel heads at different scales:
+
+1. N3 (80x80): Small object detection
+   - Regression branch: Conv -> Conv -> 4 outputs (bbox)
+   - Classification branch: Conv -> Conv -> C outputs (classes)
+
+2. N4' (40x40): Medium object detection
+   - Same structure as N3
+   - Different anchor assignments
+
+3. N5 (20x20): Large object detection
+   - Same structure as N3
+   - Different anchor assignments
+
+*** Key Innovations in YOLOv8 Neck
+
+**** 1. C2f Modules Replace C3
+Comparison:
+- YOLOv5 C3: Single path through bottleneck blocks
+- YOLOv8 C2f: Split-and-concatenate with more gradient paths
+
+Benefits:
+- Better gradient flow during training
+- Lighter architecture (fewer parameters)
+- Faster inference
+- Better feature learning
+
+**** 2. Concatenation Instead of Addition
+- Classic FPN: Element-wise addition (requires same channels)
+- YOLOv8: Channel-wise concatenation then 1x1 conv
+- Preserves more information
+- Allows flexible channel counts
+
+**** 3. Decoupled Detection Heads
+Separate branches for:
+- Regression (bounding box): Focuses on localization
+- Classification (object class): Focuses on recognition
+
+Benefits:
+- Specialized feature learning
+- Better convergence
+- Improved accuracy
+
+**** 4. Anchor-Free Design
+- No predefined anchor boxes
+- Direct prediction of object centers
+- Simpler post-processing
+- Better generalization to varying object sizes
+
+**** 5. SPPF Optimization
+Sequential pooling:
+```
+MaxPool -> MaxPool -> MaxPool (sequential)
+vs
+MaxPool | MaxPool | MaxPool (parallel in SPP)
+```
+- Same receptive field (13x13)
+- Faster computation
+- Lower memory usage
+
+*** Channel Flow Example (YOLOv8n)
+
+```
+Backbone -> Neck -> Head
+
+P5 (512ch, 20x20)
+    |
+SPPF (512ch)
+    |
+    +--------------> Upsample (512ch, 40x40)
+                           |
+P4 (256ch, 40x40) ---------> Concat (768ch, 40x40)
+                           |
+                        C2f (256ch, 40x40) = N4
+                           |
+                           +----------> Upsample (256ch, 80x80)
+                                            |
+P3 (128ch, 80x80) -----------------------> Concat (384ch, 80x80)
+                                            |
+                                         C2f (128ch, 80x80) = N3
+                                            |
+                                            +-> Head3 (small objects)
+                                            |
+                           Conv stride=2 (128ch, 40x40)
+                                            |
+                           Concat with N4 (384ch, 40x40)
+                                            |
+                                         C2f (256ch, 40x40) = N4'
+                                            |
+                                            +-> Head4 (medium objects)
+                                            |
+                           Conv stride=2 (256ch, 20x20)
+                                            |
+                           Concat with P5 (768ch, 20x20)
+                                            |
+                                         C2f (512ch, 20x20) = N5
+                                            |
+                                            +-> Head5 (large objects)
+```
+
+*** Scaled Variants Channel Configuration
+
+YOLOv8 scales neck channels with model size:
+
+**** YOLOv8n (nano)
+- N3: 128 channels
+- N4: 256 channels
+- N5: 512 channels
+
+**** YOLOv8s (small)
+- N3: 128 channels
+- N4: 256 channels
+- N5: 512 channels
+
+**** YOLOv8m (medium)
+- N3: 192 channels
+- N4: 384 channels
+- N5: 576 channels
+
+**** YOLOv8l (large)
+- N3: 256 channels
+- N4: 512 channels
+- N5: 512 channels
+
+**** YOLOv8x (extra-large)
+- N3: 320 channels
+- N4: 640 channels
+- N5: 640 channels
+
+*** Performance Characteristics
+
+Neck computational cost:
+- YOLOv8n: ~2.5 GFLOPs (neck only)
+- YOLOv8x: ~45 GFLOPs (neck only)
+- Approximately 30% of total model FLOPs
+
+Memory usage:
+- Feature maps stored during forward pass
+- Gradients during backward pass
+- Manageable with modern GPUs
+
+Inference speed impact:
+- Neck adds ~30-40% to backbone inference time
+- Worth it for multi-scale detection capability
+- Critical for detecting objects of varying sizes
+
+*** Comparison with YOLOv5 Neck
+
+| Feature | YOLOv5 | YOLOv8 |
+|---------|--------|--------|
+| Module type | C3 | C2f |
+| Gradient paths | Single | Multiple |
+| Feature fusion | Addition/Concat | Concat only |
+| Detection head | Coupled | Decoupled |
+| Anchor-based | Yes | No |
+| SPPF | No (uses SPP) | Yes |
+| Parameters | More | Fewer (10-20% less) |
+| Speed | Baseline | 10-20% faster |
+
+*** Use in Our Project
+
+Our indoor navigation system uses YOLOv8x-OIV7:
+- Neck processes backbone features into three scales
+- Detects objects from tiny (person far away) to large (door close-up)
+- Real-time multi-scale detection critical for blind navigation
+- PAN pathway enhances localization for obstacle avoidance
+- Decoupled heads improve accuracy for safety-critical detection
+
+** YOLOv11
+Further refinements:
+- Enhanced C2f variants (C3k2)
+- Attention mechanisms in neck
+- State-of-art performance
+
+* Related Concepts
+
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+
+* Footnotes
+
+[fn:1] FPN paper (2017) revolutionized multi-scale object detection
+
+[fn:2] Most modern detectors use FPN or variants - standard component
+
+[fn:3] Top-down + bottom-up (PANet style) now standard in YOLO family
+
+[fn:4] YOLOv8's PAN-FPN neck is the feature aggregation core of our project's detection system

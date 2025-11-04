@@ -1,0 +1,446 @@
+#+TITLE: Bounding Box Coordinate Conversions
+#+DATE: 2025-10-16 20:07
+#+TAGS: :codebase: :function: :bbox:
+#+ID: 20251016200700
+
+:PROPERTIES:
+:ID:       20251016200700
+:ROAM_ALIASES: "Bbox Conversions" "Coordinate Utils" "Format Conversion Code"
+:END:
+
+* Overview
+
+This note documents the bounding box coordinate conversion functions used in the CV-Project codebase, with practical examples from the detection pipeline.
+
+* Conversion Functions Used in Codebase
+
+** XYXY to LTWH (Detection Pipeline)
+
+Location: app/routes/detection.py (lines 138-152)
+
+#+BEGIN_SRC python
+# Extract XYXY coordinates from YOLO output
+bbox_coords = box.xyxy[0].tolist()  # [x1, y1, x2, y2]
+x1, y1, x2, y2 = bbox_coords
+
+# Calculate width and height
+width = x2 - x1
+height = y2 - y1
+
+# Create detection dict with LTWH format for tracker
+raw_detections.append({
+    'bbox': [x1, y1, width, height],  # LTWH for DeepSORT
+    'bbox_xyxy': bbox_coords,          # Keep original XYXY
+    'confidence': confidence,
+    'class_name': normalized_class_name,
+    'class_id': class_id
+})
+#+END_SRC
+
+*Why this conversion?*
+- YOLO outputs XYXY format naturally
+- DeepSORT tracker requires LTWH format
+- Both formats stored for flexibility
+
+** Utility Conversion Functions
+
+Complete conversion utilities:
+
+#+BEGIN_SRC python
+def xyxy_to_ltwh(bbox):
+    """
+    Convert XYXY to LTWH format.
+
+    Args:
+        bbox: [x1, y1, x2, y2]
+
+    Returns:
+        [left, top, width, height]
+    """
+    x1, y1, x2, y2 = bbox
+    return [x1, y1, x2 - x1, y2 - y1]
+
+
+def ltwh_to_xyxy(bbox):
+    """
+    Convert LTWH to XYXY format.
+
+    Args:
+        bbox: [left, top, width, height]
+
+    Returns:
+        [x1, y1, x2, y2]
+    """
+    left, top, width, height = bbox
+    return [left, top, left + width, top + height]
+
+
+def xyxy_to_xywh_center(bbox):
+    """
+    Convert XYXY to center XYWH format.
+
+    Args:
+        bbox: [x1, y1, x2, y2]
+
+    Returns:
+        [x_center, y_center, width, height]
+    """
+    x1, y1, x2, y2 = bbox
+    width = x2 - x1
+    height = y2 - y1
+    x_center = x1 + width / 2
+    y_center = y1 + height / 2
+    return [x_center, y_center, width, height]
+
+
+def xywh_center_to_xyxy(bbox):
+    """
+    Convert center XYWH to XYXY format.
+
+    Args:
+        bbox: [x_center, y_center, width, height]
+
+    Returns:
+        [x1, y1, x2, y2]
+    """
+    x_center, y_center, width, height = bbox
+    x1 = x_center - width / 2
+    y1 = y_center - height / 2
+    x2 = x_center + width / 2
+    y2 = y_center + height / 2
+    return [x1, y1, x2, y2]
+
+
+def ltwh_to_xywh_center(bbox):
+    """
+    Convert LTWH to center XYWH format.
+
+    Args:
+        bbox: [left, top, width, height]
+
+    Returns:
+        [x_center, y_center, width, height]
+    """
+    left, top, width, height = bbox
+    x_center = left + width / 2
+    y_center = top + height / 2
+    return [x_center, y_center, width, height]
+
+
+def xywh_center_to_ltwh(bbox):
+    """
+    Convert center XYWH to LTWH format.
+
+    Args:
+        bbox: [x_center, y_center, width, height]
+
+    Returns:
+        [left, top, width, height]
+    """
+    x_center, y_center, width, height = bbox
+    left = x_center - width / 2
+    top = y_center - height / 2
+    return [left, top, width, height]
+#+END_SRC
+
+* Normalization Conversions
+
+** Absolute to Normalized (for YOLO Labels)
+
+#+BEGIN_SRC python
+def normalize_bbox(bbox, img_width, img_height, format='xyxy'):
+    """
+    Normalize bbox coordinates to [0, 1] range.
+
+    Args:
+        bbox: Bbox in absolute pixels
+        img_width: Image width
+        img_height: Image height
+        format: 'xyxy', 'ltwh', or 'xywh_center'
+
+    Returns:
+        Normalized bbox
+    """
+    if format == 'xyxy':
+        x1, y1, x2, y2 = bbox
+        return [
+            x1 / img_width,
+            y1 / img_height,
+            x2 / img_width,
+            y2 / img_height
+        ]
+    elif format == 'ltwh':
+        left, top, width, height = bbox
+        return [
+            left / img_width,
+            top / img_height,
+            width / img_width,
+            height / img_height
+        ]
+    elif format == 'xywh_center':
+        x_c, y_c, w, h = bbox
+        return [
+            x_c / img_width,
+            y_c / img_height,
+            w / img_width,
+            h / img_height
+        ]
+
+
+def denormalize_bbox(bbox, img_width, img_height, format='xyxy'):
+    """
+    Denormalize bbox from [0, 1] to absolute pixels.
+
+    Args:
+        bbox: Normalized bbox
+        img_width: Image width
+        img_height: Image height
+        format: 'xyxy', 'ltwh', or 'xywh_center'
+
+    Returns:
+        Bbox in absolute pixels
+    """
+    if format == 'xyxy':
+        x1, y1, x2, y2 = bbox
+        return [
+            x1 * img_width,
+            y1 * img_height,
+            x2 * img_width,
+            y2 * img_height
+        ]
+    elif format == 'ltwh':
+        left, top, width, height = bbox
+        return [
+            left * img_width,
+            top * img_height,
+            width * img_width,
+            height * img_height
+        ]
+    elif format == 'xywh_center':
+        x_c, y_c, w, h = bbox
+        return [
+            x_c * img_width,
+            y_c * img_height,
+            w * img_width,
+            h * img_height
+        ]
+#+END_SRC
+
+* Combined Conversion with Normalization
+
+#+BEGIN_SRC python
+def xyxy_to_yolo_format(bbox, img_width, img_height):
+    """
+    Convert absolute XYXY to normalized center XYWH (YOLO format).
+
+    Args:
+        bbox: [x1, y1, x2, y2] in pixels
+        img_width: Image width
+        img_height: Image height
+
+    Returns:
+        [x_center, y_center, width, height] normalized
+    """
+    # Convert to center format
+    bbox_center = xyxy_to_xywh_center(bbox)
+
+    # Normalize
+    return normalize_bbox(bbox_center, img_width, img_height, 'xywh_center')
+
+
+def yolo_format_to_xyxy(bbox, img_width, img_height):
+    """
+    Convert normalized center XYWH (YOLO format) to absolute XYXY.
+
+    Args:
+        bbox: [x_center, y_center, width, height] normalized
+        img_width: Image width
+        img_height: Image height
+
+    Returns:
+        [x1, y1, x2, y2] in pixels
+    """
+    # Denormalize
+    bbox_abs = denormalize_bbox(bbox, img_width, img_height, 'xywh_center')
+
+    # Convert to XYXY
+    return xywh_center_to_xyxy(bbox_abs)
+#+END_SRC
+
+* Validation and Clipping
+
+** Clip Bboxes to Image Boundaries
+
+#+BEGIN_SRC python
+def clip_bbox_to_image(bbox, img_width, img_height, format='xyxy'):
+    """
+    Clip bbox to image boundaries.
+
+    Args:
+        bbox: Bbox coordinates
+        img_width: Image width
+        img_height: Image height
+        format: Bbox format
+
+    Returns:
+        Clipped bbox
+    """
+    if format == 'xyxy':
+        x1, y1, x2, y2 = bbox
+        x1 = max(0, min(x1, img_width))
+        y1 = max(0, min(y1, img_height))
+        x2 = max(0, min(x2, img_width))
+        y2 = max(0, min(y2, img_height))
+        return [x1, y1, x2, y2]
+
+    elif format == 'ltwh':
+        left, top, width, height = bbox
+        left = max(0, min(left, img_width))
+        top = max(0, min(top, img_height))
+        right = min(left + width, img_width)
+        bottom = min(top + height, img_height)
+        width = right - left
+        height = bottom - top
+        return [left, top, width, height]
+
+
+def clip_normalized_bbox(bbox):
+    """
+    Clip normalized bbox to [0, 1] range.
+
+    Args:
+        bbox: Normalized bbox (any format)
+
+    Returns:
+        Clipped bbox
+    """
+    return [max(0.0, min(1.0, coord)) for coord in bbox]
+#+END_SRC
+
+** Validate Bbox
+
+#+BEGIN_SRC python
+def is_valid_bbox(bbox, format='xyxy', min_size=1):
+    """
+    Check if bbox is valid.
+
+    Args:
+        bbox: Bbox coordinates
+        format: Bbox format
+        min_size: Minimum width/height in pixels
+
+    Returns:
+        True if valid, False otherwise
+    """
+    try:
+        if format == 'xyxy':
+            x1, y1, x2, y2 = bbox
+            return x2 > x1 + min_size and y2 > y1 + min_size
+
+        elif format == 'ltwh' or format == 'xywh_center':
+            *_, width, height = bbox
+            return width >= min_size and height >= min_size
+
+        return False
+
+    except (ValueError, TypeError):
+        return False
+#+END_SRC
+
+* Batch Conversion
+
+#+BEGIN_SRC python
+import numpy as np
+
+def convert_bboxes_batch(bboxes, from_format, to_format, img_width=None, img_height=None):
+    """
+    Convert multiple bboxes at once.
+
+    Args:
+        bboxes: List or array of bboxes
+        from_format: Source format
+        to_format: Target format
+        img_width: Image width (for normalization)
+        img_height: Image height (for normalization)
+
+    Returns:
+        Converted bboxes
+    """
+    bboxes = np.array(bboxes)
+
+    # Conversion mapping
+    converters = {
+        ('xyxy', 'ltwh'): xyxy_to_ltwh,
+        ('ltwh', 'xyxy'): ltwh_to_xyxy,
+        ('xyxy', 'xywh_center'): xyxy_to_xywh_center,
+        ('xywh_center', 'xyxy'): xywh_center_to_xyxy,
+        ('ltwh', 'xywh_center'): ltwh_to_xywh_center,
+        ('xywh_center', 'ltwh'): xywh_center_to_ltwh,
+    }
+
+    converter = converters.get((from_format, to_format))
+    if converter is None:
+        raise ValueError(f"No converter from {from_format} to {to_format}")
+
+    return np.array([converter(bbox) for bbox in bboxes])
+#+END_SRC
+
+* Usage Examples from Codebase
+
+** Example 1: Detection to Tracking
+
+From app/routes/detection.py:
+
+#+BEGIN_SRC python
+# YOLO gives XYXY
+bbox_xyxy = box.xyxy[0].tolist()  # [100, 150, 300, 400]
+
+# Convert to LTWH for DeepSORT
+x1, y1, x2, y2 = bbox_xyxy
+bbox_ltwh = [x1, y1, x2 - x1, y2 - y1]  # [100, 150, 200, 250]
+
+# Pass to tracker
+tracker.update(bbox_ltwh, confidence, class_name)
+#+END_SRC
+
+** Example 2: Creating YOLO Label File
+
+#+BEGIN_SRC python
+# Detection bbox in XYXY
+bbox = [100, 150, 300, 400]
+class_id = 0
+img_w, img_h = 640, 480
+
+# Convert to YOLO format
+bbox_yolo = xyxy_to_yolo_format(bbox, img_w, img_h)
+# Result: [0.3125, 0.5729, 0.3125, 0.5208]
+
+# Write to file
+with open('label.txt', 'w') as f:
+    f.write(f"{class_id} {' '.join(f'{v:.6f}' for v in bbox_yolo)}\n")
+#+END_SRC
+
+* Performance Optimization
+
+For high-frequency conversions:
+
+#+BEGIN_SRC python
+import numpy as np
+
+def xyxy_to_ltwh_vectorized(bboxes):
+    """Vectorized conversion for speed."""
+    bboxes = np.array(bboxes)
+    ltwh = np.zeros_like(bboxes)
+    ltwh[:, 0] = bboxes[:, 0]  # left = x1
+    ltwh[:, 1] = bboxes[:, 1]  # top = y1
+    ltwh[:, 2] = bboxes[:, 2] - bboxes[:, 0]  # width = x2 - x1
+    ltwh[:, 3] = bboxes[:, 3] - bboxes[:, 1]  # height = y2 - y1
+    return ltwh
+#+END_SRC
+
+* Related Notes
+
+- [[id:20251016200000][Bounding Box Formats]] - Format specifications
+- [[id:20251016200100][YOLO Label Format]] - YOLO format details
+- [[id:20251015130450][Bounding Box Predictions]] - Detection output structure
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

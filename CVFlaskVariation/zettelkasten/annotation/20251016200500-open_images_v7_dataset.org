@@ -1,0 +1,260 @@
+#+TITLE: Open Images v7 Dataset
+#+DATE: 2025-10-16 20:05
+#+TAGS: :annotation: :dataset: :yolo:
+#+ID: 20251016200500
+
+:PROPERTIES:
+:ID:       20251016200500
+:ROAM_ALIASES: "OIV7" "Open Images Dataset" "Google Open Images"
+:END:
+
+* Overview
+
+Open Images v7 is a large-scale dataset by Google containing millions of annotated images across 600+ object classes. The CV-Project uses YOLOv8x-oiv7 model pre-trained on this dataset.
+
+* Dataset Statistics
+
+- *Images*: 9 million+ training images
+- *Classes*: 600+ object categories
+- *Annotations*: Bounding boxes, segmentation masks, visual relationships
+- *License*: Creative Commons (various)
+- *Source*: Google Research
+
+* Class Structure
+
+** High-Level Categories
+
+- Animals (mammals, birds, fish, insects)
+- Vehicles (cars, bikes, boats, aircraft)
+- Furniture (chairs, tables, beds, sofas)
+- Food (fruits, vegetables, dishes)
+- Household objects
+- Electronics
+- Clothing and accessories
+- Sports equipment
+- Musical instruments
+- Plants and nature
+
+** CV-Project Relevant Classes
+
+Classes used for indoor navigation (from data.yaml):
+
+#+BEGIN_EXAMPLE
+Person
+Chair
+Table
+Sofa
+Bed
+Door
+Stairs
+Cabinet
+Plant
+Wall
+Window
+Lamp
+Television
+Computer
+Book
+Bottle
+# ... 584 more classes
+#+END_EXAMPLE
+
+* Model: YOLOv8x-oiv7
+
+** Specifications
+
+- *Architecture*: YOLOv8 Extra Large variant
+- *Training data*: Open Images v7
+- *Classes*: 600+
+- *Input size*: 640x640 (default)
+- *Format*: PyTorch (.pt)
+
+** Usage in CV-Project
+
+File: app/services/yolo_detector.py
+
+#+BEGIN_SRC python
+self.model = YOLO('yolov8x-oiv7.pt')
+self.confidence_threshold = 0.30
+self.iou_threshold = 0.65
+self.max_detections = 50
+#+END_SRC
+
+** Performance Characteristics
+
+- High accuracy on diverse object classes
+- Good generalization to indoor scenes
+- Conservative confidence threshold (0.30) for safety-critical navigation
+- Handles 600+ classes without custom training
+
+* Class Filtering in CV-Project
+
+File: app/constants.py and app/utils/filtering.py
+
+** Blacklisted Classes
+
+These classes are filtered out during detection:
+
+#+BEGIN_SRC python
+BLACKLISTED_CLASSES = {
+    'house',
+    'office building',
+    'building',
+    'skyscraper',
+    'tower'
+}
+#+END_SRC
+
+*Reason*: Too broad for indoor navigation, can cause false positives.
+
+** Class Normalization
+
+Aliases mapped to canonical forms:
+
+#+BEGIN_SRC python
+CLASS_ALIASES = {
+    'man': 'person',
+    'woman': 'person',
+    'boy': 'person',
+    'girl': 'person',
+    'face': 'person',
+    'head': 'person'
+}
+#+END_SRC
+
+*Reason*: Unified person detection for navigation tracking.
+
+* data.yaml Configuration
+
+File: data.yaml (root directory)
+
+#+BEGIN_SRC yaml
+# Open Images v7 dataset configuration
+path: /path/to/open-images-v7
+train: images/train
+val: images/validation
+test: images/test
+
+# Classes (600+ classes)
+names:
+  0: Person
+  1: Bicycle
+  2: Car
+  3: Motorcycle
+  # ... 596 more classes
+
+nc: 600  # Number of classes
+#+END_SRC
+
+* Advantages for CV-Project
+
+** Out-of-the-Box Performance
+
+- No custom training needed for initial deployment
+- Broad object coverage
+- Handles diverse indoor scenes
+- Pre-trained on high-quality annotations
+
+** Fine-Tuning Potential
+
+Can fine-tune on custom indoor dataset:
+
+1. Start with yolov8x-oiv7.pt weights
+2. Add custom classes or refine existing ones
+3. Train on domain-specific data (indoor navigation scenarios)
+4. Maintain broad object recognition + specialized performance
+
+* Comparison to Other Datasets
+
+| Dataset       | Images | Classes | Focus              | CV-Project Use  |
+|---------------|--------|---------|--------------------|--------------------|
+| Open Images   | 9M+    | 600+    | General purpose    | Current (pre-trained) |
+| MS COCO       | 330K   | 80      | Common objects     | Alternative option |
+| ImageNet      | 14M    | 1000    | Classification     | Not suitable    |
+| Custom Indoor | TBD    | 10-20   | Indoor navigation  | Future training |
+
+* Accessing Open Images Dataset
+
+** Download Options
+
+1. *FiftyOne* (recommended):
+#+BEGIN_SRC python
+import fiftyone as fo
+import fiftyone.zoo as foz
+
+# Download specific classes
+dataset = foz.load_zoo_dataset(
+    "open-images-v7",
+    split="train",
+    label_types=["detections"],
+    classes=["Person", "Chair", "Table", "Door"],
+    max_samples=1000
+)
+
+# Export to YOLO format
+dataset.export(
+    export_dir="open-images-subset",
+    dataset_type=fo.types.YOLOv5Dataset,
+    label_field="ground_truth"
+)
+#+END_SRC
+
+2. *Direct download*: https://storage.googleapis.com/openimages/web/index.html
+
+3. *AWS S3*: s3://open-images-dataset/
+
+** Subset Selection
+
+For custom training, select relevant classes:
+
+#+BEGIN_SRC python
+# Indoor navigation relevant classes
+indoor_classes = [
+    "Person",
+    "Chair",
+    "Table",
+    "Sofa",
+    "Bed",
+    "Door",
+    "Stairs",
+    "Cabinet",
+    "Plant",
+    "Wall",
+    "Window"
+]
+
+dataset = foz.load_zoo_dataset(
+    "open-images-v7",
+    split="train",
+    classes=indoor_classes,
+    max_samples=5000  # Adjust based on needs
+)
+#+END_SRC
+
+* Future Training Considerations
+
+** Option 1: Fine-tune on OIV7 Subset
+
+- Select indoor-relevant classes from OIV7
+- Fine-tune existing yolov8x-oiv7 model
+- Maintains broad object recognition
+
+** Option 2: Train on Custom Dataset
+
+- Annotate indoor navigation scenarios using CVAT
+- Train from yolov8x-oiv7 weights
+- Add domain-specific classes (e.g., "wet_floor", "doorway")
+
+** Option 3: Hybrid Approach
+
+- Combine OIV7 subset + custom annotations
+- Best of both worlds: breadth + specialization
+- Recommended for production deployment
+
+* Related Notes
+
+- [[id:20251016200400][CVAT YOLO Integration]] - Custom dataset preparation
+- [[id:20251016200100][YOLO Label Format]] - Annotation format details
+- [[id:20251016200800][Dataset Augmentation Strategies]] - Data augmentation
+- [[id:20251015111300][Detection Service MOC]] - Detection implementation
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

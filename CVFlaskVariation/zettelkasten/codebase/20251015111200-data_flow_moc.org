@@ -1,0 +1,87 @@
+:PROPERTIES:
+:ID:       20251015111200-data_flow_moc
+:ROAM_ALIASES: "Data Flow" "Pipeline"
+:END:
+#+title: Data Flow MOC
+#+filetags: :moc:dataflow:pipeline:
+
+* Overview
+
+Complete end-to-end data flow from camera capture to audio announcement.
+Maps the entire detection pipeline through frontend and backend.
+
+* Pipeline Phases
+
+** Phase 1: Frontend Capture
+1. [[id:20251015114000-camera_module_startrealtimeanalysis][startRealtimeAnalysis()]] - Timer triggers every 800ms
+2. [[id:20251015116400-canvas_capture][Canvas Capture]] - Draw video frame to canvas
+3. [[id:20251015116500-base64_encoding][Base64 Encoding]] - Convert to data URI
+4. [[id:20251015116600-gyroscope_getcurrent][getCurrentOrientation()]] - Collect gyroscope data
+5. [[id:20251015116700-http_post_request][HTTP POST]] - Send to /detect_image
+
+** Phase 2: Backend Reception
+1. [[id:20251015113000-session_management][Session Management]] - Get/create session ID
+2. [[id:20251015113100-image_decoding][Image Decoding]] - Base64 to numpy array
+3. [[id:20251015116800-rgb_to_bgr][RGB to BGR Conversion]] - OpenCV format
+
+** Phase 3: Image Processing
+1. [[id:20251015113200-rotation_correction][Rotation Correction]] - Gyroscope-based rotation
+2. [[id:20251015113300-image_optimization][Image Resizing]] - Optimize for inference
+
+** Phase 4: Object Detection
+1. [[id:20251015112400-yolo_detect][YOLO Detection]] - Inference on image
+2. [[id:20251015116900-bbox_extraction][Bounding Box Extraction]] - Extract results
+
+** Phase 5: Filtering
+1. [[id:20251015113700-is_class_blacklisted][Blacklist Check]] - Remove unwanted classes
+2. [[id:20251015113800-normalize_class_name][Class Normalization]] - Normalize similar classes
+3. [[id:20251015117000-confidence_filtering][Confidence Filtering]] - Remove low confidence
+4. [[id:20251015113900-deduplicate_detections][Deduplication]] - Remove overlapping detections
+
+** Phase 6: Object Tracking
+1. [[id:20251015117100-deepsort_input_preparation][Prepare DeepSORT Input]] - Format detections
+2. [[id:20251015112500-update_tracks][Update Tracks]] - DeepSORT tracking
+3. [[id:20251015117200-trajectory_storage][Store Trajectories]] - Save position history
+
+** Phase 7: Movement & Collision
+1. [[id:20251015115600-calculate_movement][Calculate Movement]] - Velocity and direction ([[id:20251015184800-perspective_aware_movement][perspective-aware]])
+2. [[id:20251015112600-predict_collision][Predict Collision]] - Risk assessment
+
+** Phase 8: Response Assembly
+1. [[id:20251015113600-response_assembly][Combine Data]] - Merge detection + tracking + collision
+2. [[id:20251015117300-json_serialization][JSON Serialization]] - Convert to JSON
+3. [[id:20251015117400-http_response][HTTP Response]] - Send to frontend
+
+** Phase 9: Frontend Processing
+1. [[id:20251015117500-json_parsing][JSON Parsing]] - Parse response
+2. [[id:20251015117600-ui_drawdetections][Draw Detections]] - Canvas overlay
+3. [[id:20251015117700-ui_updatestats][Update Stats]] - UI counters
+4. [[id:20251015184500-calculate_reactive_navigation][Reactive Navigation]] - Calculate safe direction (replaces static pathfinding)
+
+** Phase 10: Audio Output
+1. [[id:20251015116200-check_collision_warnings][Check Collision Warnings]] - Priority warnings
+2. [[id:20251015117900-announce_detections][Announce Detections]] - General announcements
+3. [[id:20251015115900-audio_speak][Speak]] - Text-to-speech output
+
+* Timing Analysis
+
+See [[id:20251015118000-pipeline_timing][Pipeline Timing Analysis]] for detailed breakdown.
+
+** Quick Summary (CPU Mode)
+- Total: 340ms
+- Bottleneck: [[id:20251015112400-yolo_detect][YOLO]] (100-250ms)
+- Target: <1000ms for real-time (ACHIEVED)
+
+* Data Structures
+
+** Detection Object Structure
+See [[id:20251015118100-detection_object_structure][Detection Object Structure]]
+
+** Track Object Structure
+See [[id:20251015118200-track_object_structure][Track Object Structure]]
+
+* Related MOCs
+
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+- [[id:20251015111400-tracking_service_moc][Tracking Service MOC]]
+- [[id:20251015112200-performance_moc][Performance MOC]]

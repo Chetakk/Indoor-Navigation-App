@@ -1,0 +1,436 @@
+#+TITLE: Dataset Augmentation Strategies
+#+DATE: 2025-10-16 20:08
+#+TAGS: :annotation: :augmentation: :training:
+#+ID: 20251016200800
+
+:PROPERTIES:
+:ID:       20251016200800
+:ROAM_ALIASES: "Data Augmentation" "Training Data" "Image Augmentation"
+:END:
+
+* Overview
+
+Data augmentation artificially increases training dataset size and diversity by applying transformations to existing images. The CV-Project includes comprehensive augmentation tools in the utilities/ directory.
+
+* CV-Project Augmentation Pipeline
+
+** Available Tools
+
+Located in: C:/Users/parik/OneDrive/Documents/GitHub/CV-Project/utilities/
+
+1. *augScript.py*: Comprehensive augmentation with label preservation
+2. *enhancer.py*: Image quality enhancement (CLAHE, denoising, sharpening)
+3. *framer.py*: Video frame extraction for creating datasets
+
+** Workflow
+
+#+BEGIN_EXAMPLE
+Video Files
+    |
+    v
+[framer.py] --> Extract frames
+    |
+    v
+Annotate in CVAT
+    |
+    v
+Export YOLO format
+    |
+    v
+[enhancer.py] --> Improve image quality (optional)
+    |
+    v
+[augScript.py] --> Apply augmentations
+    |
+    v
+Train YOLOv8
+#+END_EXAMPLE
+
+* augScript.py: Comprehensive Augmentation
+
+** Features
+
+File: utilities/augScript.py
+
+- Rotation (-30 to +30 degrees)
+- Horizontal/vertical flipping
+- Brightness adjustment (0.5x to 1.5x)
+- Gaussian noise addition
+- Gaussian blur
+- Automatic train/val split
+- Label file preservation
+
+** Usage
+
+#+BEGIN_SRC bash
+python augScript.py INPUT_DIR OUTPUT_DIR [OPTIONS]
+
+# Basic usage
+python augScript.py annotated_images dataset --augmentation_factor 5
+
+# With custom split ratio
+python augScript.py annotated_images dataset \
+    --augmentation_factor 5 \
+    --train_ratio 0.8
+
+# Without train/val split
+python augScript.py annotated_images dataset \
+    --augmentation_factor 5 \
+    --no_split
+
+# With custom random seed
+python augScript.py annotated_images dataset \
+    --augmentation_factor 5 \
+    --seed 42
+#+END_SRC
+
+** Key Parameters
+
+- =augmentation_factor=: Number of augmented versions per image (default: 5)
+- =train_ratio=: Training set fraction (default: 0.8)
+- =seed=: Random seed for reproducibility (default: 42)
+- =no_split=: Disable train/val split
+
+** Output Structure
+
+#+BEGIN_EXAMPLE
+OUTPUT_DIR/
+|-- images/
+|   |-- train/
+|   |   |-- original_image001.jpg
+|   |   |-- aug_1_image001.jpg
+|   |   |-- aug_2_image001.jpg
+|   |   |-- aug_3_image001.jpg
+|   |   |-- aug_4_image001.jpg
+|   |   |-- aug_5_image001.jpg
+|   |   `-- ...
+|   `-- val/
+|       |-- original_image100.jpg  # No augmentation for val
+|       `-- ...
+`-- labels/
+    |-- train/
+    |   |-- original_image001.txt
+    |   |-- aug_1_image001.txt
+    |   |-- aug_2_image001.txt
+    |   `-- ...
+    `-- val/
+        |-- original_image100.txt
+        `-- ...
+#+END_EXAMPLE
+
+** Augmentation Details
+
+All augmentations applied per image:
+
+#+BEGIN_SRC python
+# From augScript.py (lines 70-83)
+# Random rotation
+angle = random.uniform(-30, 30)
+aug_image = rotate_image(aug_image, angle)
+
+# Random flip (horizontal, vertical, or both)
+flip_code = random.choice([0, 1, -1])
+aug_image = flip_image(aug_image, flip_code)
+
+# Brightness adjustment
+brightness_factor = random.uniform(0.5, 1.5)
+aug_image = adjust_brightness(aug_image, brightness_factor)
+
+# Gaussian noise
+aug_image = add_noise(aug_image, random.uniform(0.05, 0.15))
+
+# Gaussian blur
+blur_strength = random.choice([3, 5, 7])
+aug_image = apply_blur(aug_image, blur_strength)
+#+END_SRC
+
+*Note*: Labels (bounding boxes) are copied unchanged. This works for:
+- Brightness/contrast changes
+- Blur/noise addition
+- Small rotations (if boxes are tight)
+
+For geometric transformations affecting bbox coordinates, use YOLOv8's built-in augmentation during training instead.
+
+** Statistics Example
+
+#+BEGIN_EXAMPLE
+Input: 100 images
+Augmentation factor: 5
+Train ratio: 0.8
+
+Results:
+  Training: 80 original + 400 augmented = 480 images
+  Validation: 20 original (no augmentation) = 20 images
+  Total: 500 images
+#+END_EXAMPLE
+
+* enhancer.py: Image Quality Enhancement
+
+## Features
+
+File: utilities/enhancer.py
+
+Preprocessing pipeline for improving image quality before training:
+
+- CLAHE (Contrast Limited Adaptive Histogram Equalization)
+- Histogram equalization
+- Non-local means denoising
+- Gaussian blur/sharpening
+- Brightness/contrast adjustment
+- Gamma correction
+- Edge enhancement
+- Morphological operations
+- Resize to target dimensions
+- Normalization
+
+** Usage
+
+#+BEGIN_SRC bash
+python enhancer.py INPUT_DIR -o OUTPUT_DIR [OPTIONS]
+
+# Using YOLO preset (recommended)
+python enhancer.py raw_images -o enhanced_images --preset yolo
+
+# Using CNN preset
+python enhancer.py raw_images -o enhanced_images --preset cnn
+
+# Using custom config
+python enhancer.py raw_images -o enhanced_images -c custom_config.json
+
+# Create sample config
+python enhancer.py --create-config
+#+END_SRC
+
+** Presets
+
+*YOLO Preset* (conservative, preserves natural textures):
+- CLAHE enabled (clip limit: 1.5)
+- Denoising: OFF
+- Sharpening: OFF
+- Resize: 640x640
+
+*CNN Preset*:
+- CLAHE enabled (clip limit: 2.0)
+- Gamma correction: 1.05
+- Resize: 224x224
+
+** Configuration Options
+
+#+BEGIN_SRC python
+# Default config from enhancer.py (lines 19-47)
+{
+    "histogram_equalization": False,
+    "clahe_enabled": True,
+    "clahe_clip_limit": 2.0,
+    "clahe_tile_size": [8, 8],
+    "denoising": False,
+    "denoise_h": 6,
+    "gaussian_blur": False,
+    "blur_kernel_size": [3, 3],
+    "sharpening": False,
+    "brightness_adjustment": False,
+    "brightness_beta": 20,
+    "contrast_adjustment": False,
+    "contrast_alpha": 1.2,
+    "gamma_correction": False,
+    "gamma": 1.2,
+    "edge_enhancement": False,
+    "morphological_operations": False,
+    "resize": False,
+    "target_size": [640, 640],
+    "output_format": "jpg",
+    "quality": 95
+}
+#+END_SRC
+
+** When to Use Enhancement
+
+*Use enhancer.py when*:
+- Images are underexposed
+- Low contrast scenes
+- Indoor lighting inconsistencies
+- Need uniform image quality
+
+*Skip enhancement when*:
+- Images already high quality
+- Want model to learn from raw sensor data
+- Augmentation handles variability
+
+* framer.py: Frame Extraction from Video
+
+** Features
+
+File: utilities/framer.py
+
+Extract frames from videos for creating annotation datasets:
+
+- Single or multiple video processing
+- Frame interval control
+- Maximum frames per video
+- Continuous frame numbering across videos
+- Resize frames to target resolution
+- Logging support
+
+** Usage
+
+#+BEGIN_SRC bash
+# Single video
+python framer.py video.mp4 -o frames
+
+# Multiple videos
+python framer.py video1.mp4 video2.mp4 video3.mp4 -o frames
+
+# All videos in directory
+python framer.py --input-dir /path/to/videos -o frames
+
+# Extract every 30th frame
+python framer.py video.mp4 -o frames -i 30
+
+# Limit to 100 frames per video
+python framer.py video.mp4 -o frames -m 100
+
+# Resize to 640x640
+python framer.py video.mp4 -o frames -r 640x640
+
+# Start numbering from frame 1000
+python framer.py video.mp4 -o frames -s 1000
+
+# With logging
+python framer.py video.mp4 -o frames --log extraction.log
+#+END_SRC
+
+** Parameters
+
+- =-o, --output=: Output directory (default: extracted_frames)
+- =-i, --interval=: Extract every Nth frame (default: 1)
+- =-m, --max-frames=: Max frames per video
+- =-s, --start-frame=: Starting frame number (default: 0)
+- =-r, --resize=: Resize frames (e.g., 1024x1024)
+- =--log=: Save output to log file
+
+** Example Workflow
+
+#+BEGIN_SRC bash
+# Extract frames from navigation videos
+python framer.py indoor_nav_01.mp4 indoor_nav_02.mp4 \
+    -o raw_frames \
+    -i 10 \
+    -r 640x640 \
+    --log extraction.log
+
+# Annotate frames in CVAT
+# (Manual step)
+
+# Enhance image quality
+python enhancer.py raw_frames \
+    -o enhanced_frames \
+    --preset yolo
+
+# Apply augmentation
+python augScript.py enhanced_frames \
+    augmented_dataset \
+    --augmentation_factor 5 \
+    --train_ratio 0.8
+#+END_SRC
+
+** Output
+
+Frame naming format: =frame_NNNNNN.jpg= (zero-padded 6 digits)
+
+#+BEGIN_EXAMPLE
+extracted_frames/
+|-- frame_000000.jpg
+|-- frame_000001.jpg
+|-- frame_000002.jpg
+`-- ...
+#+END_EXAMPLE
+
+* Augmentation Best Practices
+
+** When to Augment
+
+*Augment when*:
+- Small dataset (<1000 images)
+- Class imbalance
+- Need robustness to variations
+- Limited annotation budget
+
+*Don't over-augment when*:
+- Large dataset already available
+- Risk of unrealistic samples
+- Training time is constraint
+
+** Augmentation Strategies by Use Case
+
+*Indoor Navigation*:
+- Brightness variation (lighting conditions)
+- Rotation (camera tilt)
+- Blur (motion)
+- Noise (sensor artifacts)
+
+*Outdoor Scenes*:
+- Weather effects
+- Seasonal variations
+- Time of day
+
+*Object Detection General*:
+- Horizontal flips (usually safe)
+- Scale variations
+- Color jittering
+- Cutout/mixup (advanced)
+
+** Validation Set Considerations
+
+*IMPORTANT*: Never augment validation set!
+
+From augScript.py (lines 241-243):
+#+BEGIN_SRC python
+# Generate augmented images (only for training set)
+if set_name == 'train':
+    augmented_images = augmentor.augment_single_image(image)
+#+END_SRC
+
+Validation set should represent real-world distribution without artificial transformations.
+
+** Augmentation Factor Guidelines
+
+| Dataset Size | Augmentation Factor | Result            |
+|--------------|---------------------|-------------------|
+| <100 images  | 10-20x              | 1000-2000 images  |
+| 100-500      | 5-10x               | 500-5000 images   |
+| 500-1000     | 3-5x                | 1500-5000 images  |
+| >1000        | 1-3x or skip        | Enough data       |
+
+* YOLOv8 Built-in Augmentation
+
+YOLOv8 also applies augmentation during training:
+
+#+BEGIN_SRC yaml
+# In training config
+augment: true
+
+# Advanced augmentation settings
+hsv_h: 0.015  # HSV-Hue augmentation
+hsv_s: 0.7    # HSV-Saturation augmentation
+hsv_v: 0.4    # HSV-Value augmentation
+degrees: 0.0  # Rotation (+/- deg)
+translate: 0.1  # Translation (+/- fraction)
+scale: 0.5    # Scale (+/- gain)
+shear: 0.0    # Shear (+/- deg)
+perspective: 0.0  # Perspective (+/- fraction)
+flipud: 0.0   # Flip up-down probability
+fliplr: 0.5   # Flip left-right probability
+mosaic: 1.0   # Mosaic augmentation probability
+mixup: 0.0    # Mixup augmentation probability
+copy_paste: 0.0  # Copy-paste augmentation probability
+#+END_SRC
+
+*Recommendation*: Use augScript.py for offline augmentation + YOLOv8 built-in for online augmentation.
+
+* Related Notes
+
+- [[id:20251016200400][CVAT YOLO Integration]] - Annotation export
+- [[id:20251016200100][YOLO Label Format]] - Label file format
+- [[id:20251016200200][CVAT Annotation Workflow]] - Annotation process
+- [[id:20251016200500][Open Images v7 Dataset]] - Pre-trained model dataset
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

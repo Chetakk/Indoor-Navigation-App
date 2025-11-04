@@ -1,0 +1,997 @@
+#+TITLE: CV-Project Developer Handbook
+#+AUTHOR: Project Documentation
+#+DATE: 2025-10-15
+#+OPTIONS: toc:4 num:t
+
+* Project Overview
+
+** Description
+A Flask-based real-time object detection and navigation system for blind/visually impaired users using YOLO11, featuring camera access, object tracking, collision detection, pathfinding, and audio announcements.
+
+** Tech Stack
+- Backend: Python 3.x, Flask, PyTorch, Ultralytics YOLO, OpenCV
+- Frontend: JavaScript ES6 Modules, HTML5 Canvas, Web Speech API
+- ML Model: YOLO11 (yolov8x-oiv7.pt)
+- Tracking: DeepSORT with MobileNet embeddings
+- Additional: Flask-CORS, NumPy, SciPy, Pillow
+
+** Key Features
+- Real-time object detection with YOLO11
+- Object tracking with DeepSORT
+- Collision detection and prediction
+- Reactive navigation for dynamic obstacle avoidance (UPDATED 2025-10-15)
+- Perspective-aware movement directions (UPDATED 2025-10-15)
+- Gyroscope-based rotation correction
+- Audio announcements with priority queue
+- Voice command support
+- SSL/HTTPS support
+
+* Project Structure
+
+#+BEGIN_SRC text
+CVFlaskVariation/
+|-- app/
+|   |-- __init__.py              # Flask app factory
+|   |-- config.py                # Configuration classes
+|   |-- constants.py             # Global constants
+|   |-- models/                  # Data models (placeholder)
+|   |   `-- __init__.py
+|   |-- routes/                  # API endpoints
+|   |   |-- __init__.py
+|   |   |-- detection.py         # Object detection endpoint
+|   |   |-- health.py            # Health check & main page
+|   |   |-- model.py             # Model info & blacklist
+|   |   |-- navigation.py        # Pathfinding endpoint
+|   |   `-- tracking.py          # Tracking management
+|   |-- services/                # Business logic
+|   |   |-- __init__.py
+|   |   |-- collision_detector.py  # Collision prediction
+|   |   |-- object_tracker.py      # DeepSORT tracking
+|   |   |-- pathfinder.py          # Reactive navigation
+|   |   `-- yolo_detector.py       # YOLO inference
+|   |-- static/
+|   |   `-- js/
+|   |       |-- main.js          # Application entry point
+|   |       `-- modules/
+|   |           |-- audio.js     # Text-to-speech & audio
+|   |           |-- camera.js    # Camera & detection loop
+|   |           |-- detection.js # Detection processing
+|   |           |-- gyroscope.js # Gyroscope tracking
+|   |           |-- pathfinding.js # Navigation paths
+|   |           |-- tracking.js  # Tracking state
+|   |           `-- ui.js        # UI rendering & stats
+|   |-- templates/
+|   |   `-- index.html           # Main HTML page
+|   `-- utils/                   # Helper functions
+|       |-- __init__.py
+|       |-- filtering.py         # Detection filtering
+|       |-- geometry.py          # Geometric calculations
+|       `-- image_processing.py  # Image transformations
+|-- docs/                        # Documentation files
+|-- run.py                       # Application entry point
+|-- test_model.py                # Model testing script
+|-- requirements.txt             # Python dependencies
+|-- Changelog.org                # Project changelog
+|-- Documentation.org            # Project documentation
+`-- CLAUDE.md                    # Claude instructions
+#+END_SRC
+
+* Backend (Python/Flask)
+
+** Entry Points
+
+*** run.py
+*Location:* [./run.py]
+
+*Purpose:* Application entry point for Flask server startup with SSL support
+
+*Key Functions:*
+- Application initialization and configuration loading
+- SSL certificate handling and validation
+- Server startup with custom host/port/debug settings
+
+*Environment Variables:*
+- FLASK_ENV: Environment mode (development/production/testing)
+- FLASK_HOST: Server host address (default: 192.168.1.14)
+- FLASK_PORT: Server port (default: 5000)
+- SSL_CERT: SSL certificate path (default: cert.pem)
+- SSL_KEY: SSL key path (default: key.pem)
+
+*** test_model.py
+*Location:* [./test_model.py]
+
+*Purpose:* Standalone script for testing YOLO model inference and GPU availability
+
+** Application Core
+
+*** app/__init__.py
+*Location:* [./app/__init__.py]
+
+*Purpose:* Flask application factory pattern implementation
+
+*Features:*
+- CORS configuration
+- Blueprint registration
+- Error handler setup (404, 500)
+- YOLO detector initialization (singleton)
+- Startup logging with system info
+
+**** create_app(config_name=None)
+Create and configure Flask application
+
+**** log_startup_info(app)
+Log detailed startup information including GPU status
+
+*** app/config.py
+*Location:* [./app/config.py]
+
+*Purpose:* Flask configuration classes for different environments
+
+*Configuration Classes:*
+- ~Config~ - Base configuration with common settings
+- ~DevelopmentConfig~ - Development environment settings
+- ~ProductionConfig~ - Production environment settings
+- ~TestingConfig~ - Testing environment settings
+
+**** get_config(env=None)
+Get configuration class based on environment
+
+*Settings Categories:*
+- Flask settings (SECRET_KEY)
+- CORS settings (origins, methods, headers)
+- Model settings (MODEL_PATH, FORCE_CPU)
+- Server settings (HOST, PORT, DEBUG)
+- SSL settings (SSL_CERT, SSL_KEY, USE_SSL)
+- Accessibility settings (BLIND_MODE_ENABLED, AUTO_START_DETECTION, etc.)
+- Audio settings (SPEECH_RATE, SPEECH_PITCH, SPEECH_VOLUME)
+- Detection announcement settings (delays, thresholds)
+
+*** app/constants.py
+*Location:* [./app/constants.py]
+
+*Purpose:* Global constants for detection, tracking, collision, and pathfinding
+
+*Constant Categories:*
+1. Class Management
+   - BLACKLISTED_CLASSES - Set of filtered object classes
+   - CLASS_MAPPING - Dictionary mapping similar classes (e.g., man->person)
+
+2. Detection Thresholds
+   - DEFAULT_CONFIDENCE_THRESHOLD (0.30)
+   - DEFAULT_IOU_THRESHOLD (0.65)
+   - MAX_DETECTIONS (50)
+
+3. Tracking Parameters
+   - TRACK_HISTORY_LENGTH (30)
+   - MAX_TRACKER_AGE (10)
+   - MIN_TRACK_INIT (2)
+   - NMS_MAX_OVERLAP (0.7)
+   - MAX_COSINE_DISTANCE (0.25)
+   - NN_BUDGET (100)
+
+4. Collision Detection
+   - USER_ZONE_RADIUS_FACTOR (0.15)
+   - COLLISION_PREDICTION_FRAMES (10)
+   - STATIONARY_THRESHOLD (5)
+   - SPEED_SLOW_THRESHOLD (2.0)
+   - SPEED_MEDIUM_THRESHOLD (10.0)
+
+5. Pathfinding
+   - DEFAULT_GRID_SIZE (20)
+   - OBSTACLE_DILATION_ITERATIONS (1)
+   - PATH_SAFETY_CHECK_RADIUS (3)
+
+6. Image Processing
+   - MAX_IMAGE_DIMENSION (640)
+   - ROTATION_DETECTION_THRESHOLD (0.75)
+   - ROTATION_TEST_SIZE ((320, 240))
+
+** Routes (API Endpoints)
+
+*** app/routes/detection.py
+*Location:* [./app/routes/detection.py:34]
+
+*Purpose:* Handle real-time object detection requests from browser
+
+*Endpoints:*
+- ~POST /detect_image~ - Process image and return detections with tracking
+- ~GET /test_audio~ - Return sample detection data for audio testing
+
+*detect_image() Flow:*
+1. Receive base64 image from browser
+2. Apply gyroscope-based rotation correction
+3. Run YOLO inference (optimized for real-time)
+4. Filter blacklisted classes
+5. Apply confidence filtering (>30%)
+6. Deduplicate overlapping same-class detections
+7. Update DeepSORT tracking
+8. Calculate movement and collision predictions
+9. Return JSON with detections, tracking, collision warnings
+
+*Response Fields:*
+- detections: Array of tracked objects with bbox, confidence, movement, collision
+- success: Boolean status
+- image_size: [width, height]
+- filtered_count: Number of blacklisted detections removed
+- rotation_applied: Degrees rotated based on gyroscope
+- tracking_enabled: Boolean
+- tracked_count: Number of confirmed tracks
+- collision_warnings: Number of objects with collision risk
+- processing_time_ms: Total processing time
+
+*** app/routes/health.py
+*Location:* [./app/routes/health.py:16]
+
+*Purpose:* Health checks, connection tests, and main page rendering
+
+*Endpoints:*
+- ~GET /~ - Render main application page (index.html)
+- ~GET/POST /test_connection~ - Verify Flask-Frontend communication
+- ~GET /health~ - Health check with GPU and model information
+
+*health_check() Returns:*
+- status: 'healthy'
+- model_loaded: Boolean
+- model_classes: Number of available classes
+- gpu_available: Boolean
+- gpu_name: GPU device name (if available)
+- gpu_memory_*: VRAM stats (if GPU available)
+- device_in_use: 'cuda' or 'cpu'
+- blacklisted_classes: List of filtered classes
+
+*** app/routes/model.py
+*Location:* [./app/routes/model.py:16]
+
+*Purpose:* Model information and class blacklist management
+
+*Endpoints:*
+- ~GET /get_classes~ - Get available object classes (excluding blacklisted)
+- ~GET /model_info~ - Get detailed model information
+- ~GET/POST /blacklist~ - Manage class blacklist
+
+*Blacklist Actions:*
+- 'add' - Add class to blacklist
+- 'remove' - Remove class from blacklist
+- 'set' - Replace entire blacklist
+
+*** app/routes/tracking.py
+*Location:* [./app/routes/tracking.py:15]
+
+*Purpose:* Object tracking session management
+
+*Endpoints:*
+- ~POST /reset_tracking~ - Reset tracking for current session
+- ~GET /tracking_stats~ - Get tracking statistics for current session
+
+*Statistics Returned:*
+- active_tracks: Number of active tracks in session
+- total_sessions: Total number of tracking sessions
+- session_id: Current session identifier
+
+*** app/routes/navigation.py
+*Location:* [./app/routes/navigation.py:20]
+
+*Purpose:* Reactive navigation for blind navigation (UPDATED 2025-10-15)
+
+*Endpoints:*
+- ~POST /navigate_reactive~ - *NEW* Calculate safe immediate direction with real-time obstacle avoidance
+- ~POST /calculate_path~ - [DEPRECATED] Static A* pathfinding (use /navigate_reactive instead)
+
+**/navigate_reactive Request Parameters:*
+- detections: Array of detection objects with movement data
+- goal: [x, y] pixel coordinates of destination
+- start: [x, y] starting position (optional, defaults to bottom center)
+- image_width: Width of video frame (default: 640)
+- image_height: Height of video frame (default: 480)
+
+**/navigate_reactive Response:*
+- success: Boolean
+- reached_goal: Boolean (true if within 1px of goal)
+- safe_direction: [x, y] normalized direction vector to walk
+- goal_direction: [x, y] direct direction to goal
+- distance_to_goal: Float distance in pixels
+- obstacles: Array of top 5 threatening obstacles
+- guidance: Object with primary, warnings, full_message
+- deviation_angle: Float deviation from direct path (degrees)
+
+**/calculate_path Request Parameters:* [DEPRECATED]
+- detections: Array of detection objects
+- goal: [x, y] pixel coordinates of destination
+- start: [x, y] starting position (optional, defaults to bottom center)
+- image_width: Width of video frame (default: 640)
+- image_height: Height of video frame (default: 480)
+- grid_size: Pixels per grid cell (default: 20)
+
+**/calculate_path Response:* [DEPRECATED]
+- success: Boolean
+- path_found: Boolean
+- path: Array of [x, y] waypoints in pixel coordinates
+- waypoint_count: Number of waypoints
+- grid_size: Grid cell size used
+- safety_score: Path safety (0-1, higher is safer)
+- occupancy_grid: 2D array for visualization
+
+** Services
+
+*** app/services/yolo_detector.py
+*Location:* [./app/services/yolo_detector.py:17]
+
+*Purpose:* YOLO model management and inference (singleton pattern)
+
+*Features:*
+- GPU/CPU detection and selection
+- Automatic fallback to default model on error
+- Configurable confidence/IOU thresholds
+- Verbose output control
+
+**** Class: YOLODetector
+
+***** __init__(model_path, force_cpu)
+Initialize YOLO detector
+
+***** _load_model()
+Load YOLO model and configure device
+
+***** detect(image, conf, iou, max_det, verbose)
+Run object detection on image
+
+***** get_class_names()
+Get all available class names
+
+***** get_model_info()
+Get model metadata
+
+**** get_detector(model_path, force_cpu)
+Get singleton detector instance
+
+*** app/services/object_tracker.py
+*Location:* [./app/services/object_tracker.py:21]
+
+*Purpose:* DeepSORT-based object tracking across video frames
+
+*DeepSORT Configuration:*
+- max_age: MAX_TRACKER_AGE (10 frames)
+- n_init: MIN_TRACK_INIT (2 consecutive detections)
+- nms_max_overlap: NMS_MAX_OVERLAP (0.7)
+- max_cosine_distance: MAX_COSINE_DISTANCE (0.25)
+- nn_budget: NN_BUDGET (100)
+- embedder: "mobilenet" with GPU support if available
+- Track history: Stores last 30 positions per track
+
+**** Class: ObjectTrackingManager
+
+***** __init__()
+Initialize tracking manager
+
+***** get_tracker(session_id)
+Get or create tracker for session
+
+***** update_tracks(session_id, detections, frame)
+Update tracks with new detections
+
+***** get_track_history(session_id, track_id)
+Get trajectory for specific track
+
+***** reset_session(session_id)
+Reset tracking for session
+
+***** get_session_stats(session_id)
+Get session statistics
+
+***** get_global_stats()
+Get global tracking statistics
+
+**** get_tracking_manager()
+Get singleton tracking manager instance
+
+*** app/services/collision_detector.py
+*Location:* [./app/services/collision_detector.py:16]
+
+*Purpose:* Movement analysis and collision prediction for blind safety (UPDATED 2025-10-15)
+
+*Movement Directions (Perspective-Aware):*
+- stationary - Displacement < 5 pixels
+- moving_right - Angle -45 to 45 degrees
+- moving_closer - Angle 45 to 135 degrees (approaching user, was "moving_down")
+- moving_left - Angle 135 to 180 or -180 to -135 degrees
+- moving_away - Angle -135 to -45 degrees (receding from user, was "moving_up")
+
+*IMPORTANT:* Directions use camera perspective mapping:
+- "moving_closer" = object moving toward bottom of frame = approaching user
+- "moving_away" = object moving toward top of frame = receding from user
+- Eliminates confusing "up/down" terminology for blind users
+
+*Speed Classes:*
+- slow - < 2.0 pixels/frame
+- medium - 2.0 to 10.0 pixels/frame
+- fast - > 10.0 pixels/frame
+
+*Collision Severity:*
+- high - Will enter user zone (15% of frame radius)
+- medium - Approaching user zone (within 2x radius)
+- low - Approaching from distance (within 3x radius)
+- none - Not approaching or stationary
+
+**** calculate_movement(trajectory)
+Calculate movement info from trajectory with perspective-aware directions
+*Returns:* direction, speed, speed_class, displacement, angle, velocity_x, velocity_y
+
+**** predict_collision(track_center, track_movement, image_width, image_height, prediction_frames)
+Predict collision with user
+*Returns:* collision_risk, is_approaching, time_to_collision, collision_severity, predicted_position, distances
+
+*** app/services/pathfinder.py
+*Location:* [./app/services/pathfinder.py:15]
+
+*Purpose:* Reactive navigation for dynamic obstacle avoidance (UPDATED 2025-10-15)
+
+*Reactive Navigation Features:*
+- Real-time obstacle avoidance (500ms update cycle)
+- Handles moving obstacles naturally
+- Direction sampling (16 candidates, -90deg to +90deg)
+- Natural language voice guidance
+- Perspective-aware movement directions ("approaching" not "moving down")
+- Works with partial environment knowledge (camera view only)
+
+**** calculate_reactive_navigation(detections, goal, start, image_width, image_height)
+*NEW* Core reactive navigation algorithm - calculates safe immediate direction toward goal
+*Returns:* Dict with safe_direction, goal_direction, distance_to_goal, obstacles, guidance, deviation_angle
+
+**** find_safe_direction(goal_direction, obstacles, start, image_width, image_height)
+*NEW* Find safe walking direction avoiding obstacles while moving toward goal
+*Returns:* Normalized direction vector [x, y]
+
+**** generate_voice_guidance(safe_direction, goal_direction, distance_to_goal, obstacles)
+*NEW* Generate human-readable navigation voice guidance
+*Returns:* Dict with primary message, warnings list, full_message
+
+**** create_occupancy_grid(detections, image_width, image_height, grid_size)
+Create 2D occupancy grid from detections
+*Returns:* NumPy array (0=free, 1=obstacle)
+
+**** astar_pathfinding(grid, start, goal) [DEPRECATED]
+*DEPRECATED 2025-10-15* - Use calculate_reactive_navigation() for dynamic environments
+A* pathfinding algorithm (kept for backwards compatibility, static environments only)
+*Returns:* List of (x, y) waypoints or None if no path
+
+**** calculate_path_safety(grid, path)
+Calculate path safety score
+*Returns:* Float 0-1 (higher is safer)
+
+**** convert_path_to_pixels(path_grid, grid_size)
+Convert grid coordinates to pixels
+*Returns:* List of [x, y] pixel coordinates
+
+** Utilities
+
+*** app/utils/filtering.py
+*Location:* [./app/utils/filtering.py:12]
+
+*Purpose:* Detection filtering, blacklisting, normalization, and deduplication
+
+*Deduplication Process:*
+1. Group detections by normalized class name
+2. Sort each group by confidence (highest first)
+3. For each detection, check IoU with already-kept detections
+4. Keep only if IoU < threshold with all kept detections
+
+**** is_class_blacklisted(class_name)
+Check if class is blacklisted
+
+**** normalize_class_name(class_name)
+Normalize using CLASS_MAPPING
+
+**** deduplicate_same_class_detections(detections, iou_threshold)
+Remove overlapping same-class detections
+
+**** filter_detections_by_confidence(detections, min_confidence)
+Filter by confidence threshold
+
+**** filter_detections_by_classes(detections, allowed_classes)
+Keep only specific classes
+
+*** app/utils/geometry.py
+*Location:* [./app/utils/geometry.py:9]
+
+*Purpose:* Geometric calculations for bounding boxes and distances
+
+*Bounding Box Formats:*
+- 'xyxy': [x1, y1, x2, y2] (top-left and bottom-right corners)
+- 'ltwh': [left, top, width, height]
+
+**** calculate_iou(box1, box2)
+Calculate Intersection over Union
+
+**** calculate_distance(point1, point2)
+Euclidean distance between points
+
+**** calculate_box_center(bbox)
+Get center point of bounding box
+
+**** calculate_box_area(bbox)
+Calculate bounding box area
+
+**** convert_bbox_format(bbox, from_format, to_format)
+Convert between 'xyxy' and 'ltwh' formats
+
+*** app/utils/image_processing.py
+*Location:* [./app/utils/image_processing.py:16]
+
+*Purpose:* Image rotation correction and preprocessing
+
+*Rotation Angles:*
+- 0 degrees - Portrait (normal)
+- 90 degrees - Landscape right
+- 180 degrees - Portrait upside down
+- 270 degrees - Landscape left
+
+*Gyroscope Data:*
+- alpha: Z-axis rotation (compass heading) 0-360 degrees
+- beta: X-axis rotation (front-to-back tilt) -180 to 180 degrees
+- gamma: Y-axis rotation (left-to-right tilt) -90 to 90 degrees
+- screen_orientation: Screen angle (0, 90, 180, 270)
+
+**** fix_image_orientation(image)
+Fix orientation based on EXIF data
+
+**** get_rotation_from_gyroscope(orientation_data)
+Determine rotation from gyroscope
+
+**** apply_rotation_correction(image_bgr, rotation_degrees)
+Apply rotation to image
+
+**** detect_and_fix_rotation(image_np, model, confidence_threshold)
+Auto-detect rotation (fallback)
+
+**** resize_image_for_inference(image, max_dimension)
+Resize image for faster inference
+
+* Frontend (JavaScript)
+
+** Main Application
+
+*** app/static/js/main.js
+*Location:* [./app/static/js/main.js:1]
+
+*Purpose:* Application entry point, module imports, and initialization
+
+*Imported Modules:*
+- audio.js - toggleAudio, testAudio, speak, audioState
+- gyroscope.js - initializeOrientation, calibrateGyroscope, requestOrientationPermission
+- detection.js - estimateDistance
+- pathfinding.js - togglePathfinding, setNavigationGoal, getPathfindingState
+- ui.js - toggleHeader, toggleDetectionBoxes, addOrientationStatusIndicator
+- camera.js - startCamera, stopDetection, startRealtimeAnalysis, getCameraState
+
+*Voice Commands:*
+- "start" / "begin" - Start detection
+- "stop" / "pause" - Stop detection
+- "where" / "what" - Announce current objects
+- "find [object]" - Navigate to specific object
+- "help" - Show help message
+- "audio on/off" - Toggle audio
+- "enable/disable audio" - Toggle audio
+
+*Auto-Start Features:*
+- Auto-start camera on mobile devices (2 second delay)
+- Voice commands activated automatically (3 second delay)
+- Gyroscope initialization on page load
+- Auto-hide project details on mobile (3 second timeout)
+
+*Keyboard Shortcuts:*
+- Spacebar - Toggle camera detection
+
+**** testConnection()
+Test backend connection
+
+**** testStats()
+Test stats update with sample data
+
+**** isMobileDevice()
+Check if device is mobile
+
+**** announceCurrentObjects()
+Announce detected objects on demand
+
+**** handleFindCommand(command)
+Process "find X" voice commands
+
+**** getCurrentObjectList()
+Get comma-separated list of visible objects
+
+**** getSimilarObjects(target)
+Suggest similar objects based on partial match
+
+**** initializeVoiceCommands()
+Initialize speech recognition
+
+** Modules
+
+*** app/static/js/modules/camera.js
+*Location:* [./app/static/js/modules/camera.js:1]
+
+*Purpose:* Camera initialization, video stream, and real-time detection loop
+
+*Detection Loop:*
+- Interval: 800ms for real-time hazard detection
+- Skips frames if previous request still processing
+- Captures video frame to canvas
+- Includes gyroscope orientation data
+- 10 second timeout for requests
+- Aborts pending requests when stopping
+
+*Camera Constraints:*
+- Width: 640 (ideal)
+- Height: 480 (ideal)
+- Frame rate: 30 fps (ideal)
+- Facing mode: 'environment' (back camera on mobile)
+
+*State Variables:*
+- stream - MediaStream object
+- detectionActive - Boolean
+- isProcessingRequest - Boolean
+- trackingEnabled - Boolean
+
+**** startCamera()
+Start camera and detection
+
+**** stopDetection()
+Stop detection and clear data
+
+**** startRealtimeAnalysis()
+Start real-time analysis loop
+
+**** setTrackingEnabledState(enabled)
+Set tracking enabled state
+
+**** getCameraState()
+Get current camera state
+
+*** app/static/js/modules/audio.js
+*Location:* [./app/static/js/modules/audio.js:1]
+
+*Purpose:* Text-to-speech, audio announcements, and priority queue
+
+*Priority Levels:*
+- critical - Maximum priority, interrupts all, fastest rate (1.2)
+- high - High priority, interrupts current, fast rate (1.1)
+- normal - Normal priority, queued if speaking, normal rate (0.95)
+- low - Low priority, queued if speaking, normal rate (0.95)
+
+*Queue Management:*
+- MAX_QUEUE_SIZE: 1 (only latest announcement)
+- FIFO overwrite - Removes oldest when full
+- Automatic processing on speech end
+- 300ms delay between announcements
+
+*Audio State:*
+- enabled - Boolean toggle
+- queue - Array of announcements
+- isPlaying - Boolean
+- speechSynth - SpeechSynthesis API
+- lastAnnouncement - Object tracking last announcements per class
+
+**** toggleAudio()
+Toggle audio on/off
+
+**** queueAnnouncement(text, priority)
+Queue announcement with FIFO
+
+**** speak(text, priority)
+Speak text with priority handling
+
+**** testAudio()
+Test audio system
+
+*** app/static/js/modules/detection.js
+*Location:* [./app/static/js/modules/detection.js:1]
+
+*Purpose:* Detection processing, distance estimation, collision warnings
+
+*Direction Zones:*
+- Horizontal: far left (<0.2), left (0.2-0.35), slightly left (0.35-0.45), center (0.45-0.55),
+  slightly right (0.55-0.65), right (0.65-0.8), far right (>0.8)
+- Vertical: above (<0.3), level (0.3-0.7), below (>0.7)
+
+*Distance Categories:*
+- immediate - Object ratio > 0.3 (very close)
+- near - Object ratio > 0.15 (close)
+- medium - Object ratio > 0.05 (medium distance)
+- far - Object ratio > 0.01 (far)
+- distant - Object ratio <= 0.01 (very far)
+
+*Announcement Intervals:*
+- Immediate threats: 2 seconds
+- Close objects: 4 seconds
+- Medium distance: 6 seconds
+- Far objects: 8 seconds
+
+*Tracking Events:*
+- New track detected
+- Movement started (stationary -> moving)
+- Speed change (slow -> fast)
+- Direction change
+- Long stationary (10+ seconds, announced every 15 seconds)
+
+**** setCanvas(canvasElement)
+Set canvas reference
+
+**** setTrackingEnabled(enabled)
+Set tracking enabled state
+
+**** setConfidenceThreshold(threshold)
+Set minimum confidence
+
+**** getConfidenceThreshold()
+Get current threshold
+
+**** getObjectDirection(bbox, imageWidth, imageHeight)
+Get direction info
+
+**** estimateDistance(bbox, className, imageWidth, imageHeight)
+Estimate distance and direction
+
+**** checkCollisionWarnings(detections)
+Check and announce collision warnings
+
+**** announceTrackingEvents(detections)
+Announce tracking-specific events
+
+**** announceDetections(detections)
+Main announcement function
+
+**** clearTrackingData()
+Clear all tracking data
+
+*** app/static/js/modules/gyroscope.js
+*Location:* [./app/static/js/modules/gyroscope.js:1]
+
+*Purpose:* TRUE gyroscope sensor data, integration, and calibration
+
+*Gyroscope Data:*
+- x, y, z - Angular velocities (rad/s)
+- rotation_x, rotation_y, rotation_z - Integrated rotation angles (rad)
+- baseline_z - Baseline Z rotation for calibration
+- initialized - Boolean
+- calibrated - Boolean
+- last_update - Timestamp
+- integration_time - Time for integration
+
+*Rotation Calculation:*
+1. Integrate angular velocities over time to get rotation angles
+2. Subtract baseline rotation (set during calibration)
+3. Convert from radians to degrees
+4. Normalize to -180 to 180 range
+5. Apply dead zone (<5 degrees)
+6. Snap to common angles (90, -90, 180) with 8 degree tolerance
+
+*APIs Used:*
+- Modern Gyroscope API (Chrome 67+) - Preferred
+- DeviceMotionEvent - Fallback for older devices/iOS
+
+**** initializeOrientation()
+Initialize gyroscope sensor
+
+**** calculateGyroscopeRotation()
+Calculate rotation from angular velocities
+
+**** getCurrentOrientation()
+Get current orientation data
+
+**** calibrateGyroscope()
+Manual calibration
+
+**** requestOrientationPermission()
+Request permission with calibration
+
+*** app/static/js/modules/pathfinding.js
+*Location:* [./app/static/js/modules/pathfinding.js:1]
+
+*Purpose:* Reactive navigation with real-time obstacle avoidance (UPDATED 2025-10-15)
+
+*State Variables:*
+- navigationGoal - [x, y] goal position
+- navigationGuidance - Object with safe_direction, obstacles, guidance messages
+- pathfindingEnabled - Boolean
+- lastNavigationUpdate - Timestamp for throttling
+- NAVIGATION_UPDATE_INTERVAL - 500ms (2Hz update rate)
+
+*Voice Guidance Examples:*
+- "Walk straight ahead, 3 meters"
+- "Bear slightly left, person on right"
+- "Turn right, 5 meters ahead, moving car on left"
+
+*Update Cycle:*
+- Runs every 500ms when navigation active
+- Calls /navigate_reactive endpoint
+- Announces guidance when deviation > 20deg or warnings present
+- Auto-disables when goal reached
+
+**** setNavigationGoal(event, canvas, video)
+Set goal by clicking canvas
+
+**** calculateNavigationPath(canvas, video)
+*UPDATED* Calculate reactive navigation guidance (runs continuously every 500ms)
+
+**** togglePathfinding()
+Toggle navigation mode (renamed from pathfinding)
+
+**** getPathfindingState()
+Get current state (returns guidance instead of path)
+
+*** app/static/js/modules/tracking.js
+*Location:* [./app/static/js/modules/tracking.js:1]
+
+*Purpose:* Object tracking state, colors, and helper functions
+
+*State Variables:*
+- trackingEnabled - Boolean
+- trackedObjects - Map of tracked objects by ID
+- trackColors - Object mapping track IDs to colors
+- trackFirstSeen - Map of first seen timestamps
+- trackLastMovement - Map of last movement states
+
+*Color Generation:*
+- Uses golden angle (137.5 degrees) for color distribution
+- HSL format: hsl(hue, 70%, 50%)
+- Consistent color per track ID
+
+**** getTrackColor(trackId)
+Get consistent color for track ID
+
+**** setTrackingEnabled(enabled)
+Set tracking enabled state
+
+**** clearTrackingData()
+Clear all tracking data
+
+**** cleanupStaleTrackColors(currentTrackIds)
+Remove stale track colors
+
+*** app/static/js/modules/ui.js
+*Location:* [./app/static/js/modules/ui.js:1]
+
+*Purpose:* UI rendering, statistics, FPS counter, and canvas drawing
+
+*Drawing Features:*
+- Bounding boxes color-coded by distance or track ID
+- Labels with class name, confidence, track ID
+- Direction and distance information
+- Movement indicators (arrows and speed)
+- Trajectory lines for tracked objects
+- Collision warnings with pulsing circles
+- Predicted positions for approaching objects
+- Navigation path visualization
+- User position marker
+- Goal marker
+
+*Detection Queue:*
+- MAX_DETECTION_ITEMS: 1 (only latest)
+- Circular queue with FIFO
+- Grouped by class name
+- Updates existing entries
+
+*Color Coding (Distance):*
+- Red (#ff0000) - Immediate (very close)
+- Orange (#ff8800) - Near (close)
+- Yellow (#ffff00) - Medium (medium distance)
+- Green (#00ff00) - Far (far)
+- Blue (#0088ff) - Distant (very far)
+
+**** setCanvasAndVideo(canvas, ctx, video)
+Set canvas and video references
+
+**** setDetectionActive(active)
+Set detection active state
+
+**** incrementFrameCount()
+Increment frame counter
+
+**** updateStats(detections)
+Update statistics display
+
+**** updateFPS()
+Update FPS counter
+
+**** updateRealtimeStats()
+Enhanced realtime stats update
+
+**** toggleHeader()
+Toggle header visibility
+
+**** toggleDetectionBoxes()
+Toggle detection boxes on/off
+
+**** drawDetections(detections)
+Draw detections on canvas
+
+**** updateRealtimeDetections(detections)
+Update detection results display
+
+**** addOrientationStatusIndicator()
+Add gyroscope status indicator
+
+* Configuration Files
+
+** requirements.txt
+*Location:* [./requirements.txt]
+
+*Purpose:* Python package dependencies
+
+*Key Packages:*
+- Flask - Web framework
+- flask-cors - Cross-origin resource sharing
+- ultralytics - YOLO implementation
+- torch / torchvision - PyTorch for ML
+- opencv-python - Image processing
+- numpy - Numerical computing
+- scipy - Scientific computing
+- Pillow - Image handling
+- deep-sort-realtime - Object tracking
+
+** CLAUDE.md
+*Location:* [./CLAUDE.md]
+
+*Purpose:* Instructions for Claude AI assistant
+
+*Key Rules:*
+- Always write new changes to Changelog.org
+- Always update Documentation.org with latest info
+- Ignore Deprecated folder
+- Always use basic ASCII characters (no special unicode)
+- Use Emacs org-mode features (footnotes, etc.)
+- Changelog.org structure: First header with date/time, changes under that header
+
+* Quick Reference Tables
+
+** API Endpoints
+
+| Endpoint           | Method | Purpose                            | Module         |
+|--------------------+--------+------------------------------------+----------------|
+| /                  | GET    | Render main application page       | health.py      |
+| /health            | GET    | Health check with GPU info         | health.py      |
+| /test_connection   | GET/POST| Test Flask-Frontend communication | health.py      |
+| /detect_image      | POST   | Process image for detection        | detection.py   |
+| /test_audio        | GET    | Sample detection data for audio    | detection.py   |
+| /get_classes       | GET    | Get available object classes       | model.py       |
+| /model_info        | GET    | Get model information              | model.py       |
+| /blacklist         | GET/POST| Manage class blacklist            | model.py       |
+| /reset_tracking    | POST   | Reset object tracking              | tracking.py    |
+| /tracking_stats    | GET    | Get tracking statistics            | tracking.py    |
+| /navigate_reactive | POST   | Reactive navigation guidance *NEW* | navigation.py  |
+| /calculate_path    | POST   | Calculate path [DEPRECATED]        | navigation.py  |
+
+** Services
+
+| Service             | Purpose                              | Key Method           |
+|---------------------+--------------------------------------+----------------------|
+| YOLODetector        | YOLO model inference                 | detect()             |
+| ObjectTrackingManager| DeepSORT tracking                   | update_tracks()      |
+| collision_detector  | Movement & collision prediction      | predict_collision()  |
+| pathfinder          | Reactive navigation *UPDATED*        | calculate_reactive_navigation()  |
+
+** Utilities
+
+| Utility           | Purpose                          | Key Function             |
+|-------------------+----------------------------------+--------------------------|
+| filtering.py      | Detection filtering              | deduplicate_*()          |
+| geometry.py       | Geometric calculations           | calculate_iou()          |
+| image_processing.py| Image transformations           | get_rotation_from_*()    |
+
+** JavaScript Modules
+
+| Module        | Purpose                          | Key Export            |
+|---------------+----------------------------------+-----------------------|
+| main.js       | App entry point                  | initializeVoiceCommands|
+| camera.js     | Camera & detection loop          | startCamera()         |
+| audio.js      | Text-to-speech & queue           | speak()               |
+| detection.js  | Detection processing             | announceDetections()  |
+| gyroscope.js  | Gyroscope tracking               | getCurrentOrientation()|
+| pathfinding.js| Navigation paths                 | calculateNavigationPath()|
+| tracking.js   | Tracking state                   | getTrackColor()       |
+| ui.js         | UI rendering                     | drawDetections()      |
+
+---
+
+*Last Updated:* 2025-10-15
+*Version:* 1.2 - Added reactive navigation, perspective-aware movement, deprecated A* pathfinding

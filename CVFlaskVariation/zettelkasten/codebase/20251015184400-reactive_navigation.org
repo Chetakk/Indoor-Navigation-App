@@ -1,0 +1,240 @@
+:PROPERTIES:
+:ID:       20251015184400-reactive_navigation
+:END:
+#+title: Reactive Navigation System
+#+filetags: :concept:navigation:reactive:realtime:dynamic:
+
+* Overview
+
+Reactive navigation is a local, real-time obstacle avoidance approach designed for dynamic environments with moving obstacles and partial knowledge of the surroundings.
+
+Unlike traditional pathfinding algorithms (A*, Dijkstra), reactive navigation:
+- Makes decisions based ONLY on current sensor data
+- No global path planning or map building
+- Continuously recalculates safe direction every frame
+- Naturally handles moving obstacles
+- Works with partial/incomplete environment knowledge
+
+* Comparison: A* vs Reactive Navigation
+
+| Feature              | A* Pathfinding         | Reactive Navigation         |
+|----------------------|------------------------|-----------------------------|
+| Environment          | Static only            | Dynamic (moving obstacles)  |
+| Knowledge required   | Complete map           | Partial (current view only) |
+| Update frequency     | Once                   | Continuous (500ms)          |
+| Planning horizon     | Global (start to goal) | Local (immediate direction) |
+| Obstacle handling    | Pre-calculated route   | Real-time avoidance         |
+| Path invalidation    | Common problem         | N/A (no stored path)        |
+| Computational cost   | High (grid search)     | Low (16 samples)            |
+| Failure mode         | "No path found"        | Always provides direction   |
+| Moving obstacles     | Not handled            | Natural integration         |
+| Memory requirements  | High (occupancy grid)  | Low (current detections)    |
+
+* Why A* Failed for Blind Navigation
+
+** Assumptions Violated
+
+A* algorithm assumes:
+1. Static environment (obstacles don't move)
+2. Complete knowledge (full map available)
+3. Path calculated once and followed
+
+Our system has:
+1. Dynamic obstacles (people walking, cars moving)
+2. Partial knowledge (only camera field of view)
+3. Scene changes every frame (camera moves, objects move)
+
+** The Problem
+
+#+begin_example
+Frame 1: Calculate path around stationary person
+Frame 2: Person starts walking across calculated path
+Frame 3: Path now invalid, obstacle in the way
+Frame 4: Need to recalculate entire path
+Frame 5: Person moved again, path invalid again
+...
+#+end_example
+
+Path becomes outdated faster than it can be followed.
+
+* Reactive Navigation Approach
+
+** Core Principle
+
+Every frame:
+1. Get current detections (obstacles visible NOW)
+2. Calculate direct vector to goal
+3. Sample candidate directions around goal vector
+4. Score each direction (goal alignment - obstacle penalties)
+5. Choose best safe direction
+6. Give voice guidance
+7. Repeat next frame
+
+** No Memory, No Planning
+
+Reactive navigation is "memoryless":
+- Doesn't remember past obstacles
+- Doesn't predict future positions (purely reactive)
+- Doesn't build maps
+- Only cares about: "What do I see RIGHT NOW and where do I want to go?"
+
+This is actually a STRENGTH for dynamic environments.
+
+* Algorithm Components
+
+** 1. Obstacle Analysis
+See [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]]
+
+For each detected object:
+- Calculate distance to user
+- Determine if in path to goal (dot product alignment)
+- Check if moving (velocity from tracker)
+- Compute threat score
+
+** 2. Direction Sampling
+See [[id:20251015184600-find_safe_direction][find_safe_direction()]]
+
+Sample 16 directions around goal:
+- Range: -90deg to +90deg from goal direction
+- Score each based on:
+  - Goal alignment (+10 for direct path)
+  - Obstacle proximity (penalties)
+  - Moving obstacle extra penalty (1.5x)
+  - Edge avoidance (don't guide into frame edges)
+
+** 3. Voice Guidance
+See [[id:20251015184700-generate_voice_guidance][generate_voice_guidance()]]
+
+Convert safe direction to natural language:
+- "Walk straight ahead" (< 10deg deviation)
+- "Bear slightly left" (10-30deg deviation)
+- "Turn right" (> 30deg deviation)
+- Add warnings: "person on right", "car approaching"
+
+* Benefits
+
+** Handles Dynamic Environments
+- Moving obstacles naturally integrated
+- No path invalidation (no stored path)
+- Adapts immediately to changes
+
+** Low Computational Cost
+- 16 direction samples vs thousands of grid cells
+- O(obstacles * samples) = O(n * 16)
+- Typical: < 10ms computation
+
+** Always Provides Guidance
+- Never returns "no path found"
+- Even in complex scenarios, provides best available direction
+- Degradation is graceful (may deviate from optimal, but still guides)
+
+** Partial Knowledge OK
+- Only needs current camera view
+- No map building required
+- Works with limited field of view
+
+** Real-Time Voice Guidance
+- Natural language directions
+- Context-aware warnings
+- Updates continuously
+
+* Limitations
+
+** No Global Optimality
+- Finds locally safe direction, not globally shortest path
+- May take longer route than A* in static environment
+- Can get stuck in local minima (though rare)
+
+** No Lookahead
+- Purely reactive (doesn't predict obstacle trajectories)
+- Could be enhanced with Kalman filter predictions
+- Currently: "see obstacle, avoid obstacle"
+
+** Assumes User Position
+- User assumed at bottom-center of frame
+- No actual camera position tracking (yet)
+
+** Distance Estimation
+- Rough approximation (~100 pixels = 1 meter)
+- Could be improved with depth sensors or monocular depth estimation
+
+* Use Cases
+
+** Ideal For
+- Indoor navigation with people walking
+- Outdoor navigation with traffic
+- Crowded environments
+- Real-time camera-based navigation
+- Blind/visually impaired assistance
+- Any scenario with moving obstacles
+
+** Not Ideal For
+- Static maps (A* better)
+- Need for shortest path guarantee
+- Environments where lookahead is critical
+- When complete map is available
+
+* Related Notes
+
+** Implementation
+- [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]] - Main algorithm
+- [[id:20251015184600-find_safe_direction][find_safe_direction()]] - Direction finding
+- [[id:20251015184700-generate_voice_guidance][generate_voice_guidance()]] - Voice output
+
+** Replaced
+- [[id:20251015112700-astar_pathfinding][astar_pathfinding()]] - Deprecated static pathfinding
+
+** Related Concepts
+- [[id:20251015112600-predict_collision][predict_collision()]] - Collision prediction
+- [[id:20251015112500-update_tracks][update_tracks()]] - Object tracking for velocity
+
+** Part Of
+- [[id:20251015111200-data_flow_moc][Data Flow MOC]]
+- [[id:20251015121000-navigation_moc][Navigation MOC]]
+
+* Implementation Details
+
+Location: app/services/pathfinder.py:229-464
+API Endpoint: /navigate_reactive
+Frontend: app/static/js/modules/pathfinding.js
+Visualization: app/static/js/modules/ui.js:467-596
+
+* Parameters
+
+- Update frequency: 500ms (2 Hz)
+- Direction samples: 16
+- Sample range: -90deg to +90deg
+- Goal alignment weight: +10
+- Obstacle penalty: proportional to 50/distance
+- Moving obstacle multiplier: 1.5x
+
+* Performance
+
+- Computation: < 10ms per update
+- API latency: ~50-100ms
+- Total latency: ~150ms (acceptable for navigation)
+- Works with 5-20 obstacles typical in scene
+
+* Future Enhancements
+
+** Obstacle Trajectory Prediction
+Use Kalman filter from DeepSORT to predict where obstacles will be
+
+** Short-Term Memory
+Remember recent obstacles for smoother navigation
+
+** Potential Fields
+Add attractive/repulsive force fields for more natural motion
+
+** Depth Integration
+Use depth sensors or monocular depth estimation for better distance
+
+** Dynamic Update Rate
+Speed up updates when obstacles are close/moving fast
+
+* References
+
+- Arkin, R. C. (1998). "Behavior-Based Robotics"
+- Dynamic Window Approach (DWA) for mobile robots
+- Vector Field Histogram (VFH) for obstacle avoidance
+- Potential Field Methods in robotics

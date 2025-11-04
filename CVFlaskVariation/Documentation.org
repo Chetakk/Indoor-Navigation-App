@@ -1,0 +1,1748 @@
+#+TITLE: Indoor Navigation System for the Visually Impaired
+#+AUTHOR: Parikshieth Harish, Sakthivel M, Chetak Kumar Mahato
+#+DATE: 2025
+#+OPTIONS: toc:3 num:t
+#+STARTUP: overview
+
+* Document Index
+
+** Main Documentation
+This file (Documentation.org) contains the complete technical documentation of the Indoor Navigation System.
+
+** Developer Handbook
+For quick technical navigation and function reference, see:
+- [[file:docs/DEVELOPER_HANDBOOK.org][DEVELOPER_HANDBOOK.org]] - Complete developer reference with file structure, function index, and quick lookup tables
+
+** Change History
+For a complete chronological record of all changes, improvements, and development history, see:
+- [[file:Changelog.org][Changelog.org]] - Complete development history organized by date and time
+
+** Archived Documentation
+All detailed change documentation has been consolidated into Changelog.org. Individual markdown files have been archived in the docs/ directory for reference.
+
+* Abstract
+
+This project implements a real-time computer vision system designed to assist visually impaired individuals in indoor navigation. The system leverages the YOLOv8x model trained on the Open Images v7 dataset to detect objects, DeepSORT for multi-object tracking, and Flask for web-based deployment. The application provides real-time audio feedback about detected objects, their locations, distances, movement patterns, and collision warnings.
+
+Key features include:
+- Real-time object detection using YOLOv8x-OIV7 (600+ object classes)
+- Multi-object tracking with DeepSORT for temporal consistency
+- Gyroscope-based rotation correction for mobile devices
+- Spatial audio announcements with directional information
+- Collision prediction and warning system
+- A* pathfinding for safe navigation routes
+- Web-based interface accessible from any device with a camera
+
+The system achieves near-real-time performance (800ms detection cycle) on CPU, making it practical for deployment on consumer hardware while maintaining safety-critical response times for blind navigation.
+
+** Project Information
+- *Course:* Computer Vision (UCSC-316L)
+- *Guide:* Dr. Shunmuga Perumal
+- *Team Lead:* Parikshieth Harish (23BCA0127)
+- *Team Members:* Sakthivel M (23BCA0092), Chetak Kumar Mahato (23BCA0105)
+- *Technology Stack:* Python, Flask, OpenCV, PyTorch, YOLO, DeepSORT
+- *Target Platform:* Web (Desktop & Mobile)
+
+* Architecture Overview
+
+The system follows a modular client-server architecture with real-time bidirectional communication:
+
+#+BEGIN_SRC
+
+    +---------------------------------------------------------------+
+    |                         CLIENT SIDE                           |
+    |                       (Web Browser)                           |
+    +---------------------------------------------------------------+
+    |                                                               |
+    |   +-------------------+     +-------------------+             |
+    |   |  Camera Stream    |     |   Gyroscope       |             |
+    |   |  (getUserMedia)   |     |   Sensor API      |             |
+    |   +-------------------+     +-------------------+             |
+    |            |                         |                        |
+    |            v                         v                        |
+    |   +-----------------------------------------------+           |
+    |   |         Detection Controller                  |           |
+    |   |  - Capture frame every 800ms                  |           |
+    |   |  - Collect gyroscope data                     |           |
+    |   |  - Base64 encode image                        |           |
+    |   +-----------------------------------------------+           |
+    |                          |                                    |
+    +--------------------------|------------------------------------+
+                               |
+                               | POST /detect_image
+                               | (JSON: {image: base64,
+                               |         orientation: {...}})
+                               v
+    +---------------------------------------------------------------+
+    |                        SERVER SIDE                            |
+    |                    (Flask + Python)                           |
+    +---------------------------------------------------------------+
+    |                                                               |
+    |   +-----------------------+                                   |
+    |   | Flask Routes          |  /detect_image                    |
+    |   | (Blueprints)          |  /health                          |
+    |   |                       |  /tracking_stats                  |
+    |   | app/routes/           |  /calculate_path                  |
+    |   +-----------------------+                                   |
+    |            |                                                  |
+    |            v                                                  |
+    |   +-----------------------+                                   |
+    |   | Image Preprocessing   |                                   |
+    |   |                       |                                   |
+    |   | app/utils/            |  1. Decode base64                 |
+    |   | image_processing.py   |  2. RGB -> BGR                    |
+    |   |                       |  3. Apply rotation                |
+    |   |                       |  4. Resize to 640px               |
+    |   +-----------------------+                                   |
+    |            |                                                  |
+    |            v                                                  |
+    |   +-----------------------+                                   |
+    |   | Object Detection      |                                   |
+    |   |                       |                                   |
+    |   | app/services/         |  YOLOv8x-OIV7                     |
+    |   | yolo_detector.py      |  - 600+ classes                   |
+    |   |                       |  - Conf: 0.30                     |
+    |   |                       |  - IOU: 0.65                      |
+    |   +-----------------------+                                   |
+    |            |                                                  |
+    |            v                                                  |
+    |   +-----------------------+                                   |
+    |   | Post-Processing       |                                   |
+    |   |                       |                                   |
+    |   | app/utils/            |  1. Filter blacklisted            |
+    |   | filtering.py          |  2. Normalize classes             |
+    |   | geometry.py           |  3. Deduplicate (IoU)             |
+    |   +-----------------------+                                   |
+    |            |                                                  |
+    |            v                                                  |
+    |   +-----------------------+        +-----------------------+  |
+    |   | Object Tracking       |        | Movement Analysis     |  |
+    |   |                       |        |                       |  |
+    |   | app/services/         |------->| app/services/         |  |
+    |   | object_tracker.py     |        | collision_detector.py |  |
+    |   |                       |        |                       |  |
+    |   | - DeepSORT            |        | - Trajectory          |  |
+    |   | - MobileNet features  |        | - Speed/Direction     |  |
+    |   | - Kalman filtering    |        | - Collision predict   |  |
+    |   +-----------------------+        +-----------------------+  |
+    |            |                                |                 |
+    |            +--------------------------------+                 |
+    |                             |                                 |
+    |                             v                                 |
+    |   +-----------------------------------------------+           |
+    |   |  JSON Response                                |           |
+    |   |  {detections: [...],                          |           |
+    |   |   tracking: {...},                            |           |
+    |   |   collision_warnings: [...]}                  |           |
+    |   +-----------------------------------------------+           |
+    |                          |                                    |
+    +--------------------------|------------------------------------+
+                               |
+                               | JSON Response
+                               |
+                               v
+    +---------------------------------------------------------------+
+    |                         CLIENT SIDE                           |
+    |                      (Visualization)                          |
+    +---------------------------------------------------------------+
+    |                                                               |
+    |   +-------------------+     +-------------------+             |
+    |   |  Canvas Renderer  |     |  Audio Manager    |             |
+    |   |                   |     |                   |             |
+    |   |  - Bounding boxes |     |  - Priority queue |             |
+    |   |  - Trajectories   |     |  - TTS synthesis  |             |
+    |   |  - Collision zones|     |  - Spatial audio  |             |
+    |   +-------------------+     +-------------------+             |
+    |                                                               |
+    +---------------------------------------------------------------+
+
+    Legend:
+    [Component]  Data Flow:  |    Communication: <--->
+                             v
+
+#+END_SRC
+
+** New Modular Structure (Refactored)
+
+As of 2025-10-11, the monolithic app.py (1,258 lines) has been refactored into a professional modular structure:
+
+#+BEGIN_SRC
+CVFlaskVariation/
+|-- app/                          # Main application package
+|   |-- __init__.py               # Flask app factory (83 lines)
+|   |-- config.py                 # Configuration classes (76 lines)
+|   |-- constants.py              # Application constants (62 lines)
+|   |
+|   |-- utils/                    # Utility functions
+|   |   |-- __init__.py
+|   |   |-- filtering.py          # Blacklist, deduplication (97 lines)
+|   |   |-- geometry.py           # IoU, distance calculations (104 lines)
+|   |   |-- image_processing.py  # Rotation, EXIF handling (208 lines)
+|   |
+|   |-- services/                 # Business logic services
+|   |   |-- __init__.py
+|   |   |-- yolo_detector.py      # Model management (137 lines)
+|   |   |-- object_tracker.py     # DeepSORT tracking (154 lines)
+|   |   |-- collision_detector.py # Movement & collision (140 lines)
+|   |   |-- pathfinder.py         # A* pathfinding (172 lines)
+|   |
+|   |-- routes/                   # API endpoints (blueprints)
+|   |   |-- __init__.py
+|   |   |-- health.py             # Health checks (66 lines)
+|   |   |-- model.py              # Model info routes (116 lines)
+|   |   |-- tracking.py           # Tracking management (67 lines)
+|   |   |-- navigation.py         # Pathfinding (80 lines)
+|   |   |-- detection.py          # Image detection (335 lines)
+|   |
+|   |-- models/                   # Data models (future use)
+|       |-- __init__.py
+|
+|-- static/                       # Frontend assets
+|   |-- js/
+|   |   |-- modules/              # Frontend modules (NEW: 2025-10-16)
+|   |   |   |-- timingConfig.js   # Centralized timing configuration
+|   |   |   |-- camera.js         # Camera and detection loop
+|   |   |   |-- audio.js          # Audio announcements
+|   |   |   |-- ui.js             # UI rendering
+|   |   |   |-- detection.js      # Detection processing
+|   |   |   |-- gyroscope.js      # Gyroscope tracking
+|   |   |   |-- tracking.js       # Object tracking
+|   |   |   |-- pathfinding.js    # A* pathfinding
+|   |   |-- main.js               # Application entry point
+|-- templates/                    # HTML templates
+|   |-- index.html
+|-- run.py                        # Application entry point (54 lines)
+|-- requirements.txt
+|-- REFACTORING_NOTES.md         # Detailed refactoring documentation
+|-- [SSL certificates, model files]
+#+END_SRC
+
+** Component Diagram
+
+#+BEGIN_SRC
+
+                        FRONTEND
+|--------------------------------------------------------------|
+|                                                              |
+|                                                              |
+|     Camera         Gyroscope        Canvas                   |
+|     Manager         Tracker         Renderer                 |
+|      |               |               |                       |
+|                                                              |
+|         <-----------+----------->                            |
+|                                                              |
+|                 Detection Controller                         |
+|                 - Frame capture                              |
+|                 - Request management                         |
+|                 - 800ms intervals                            |
+|                      |                                       |
+|                                                              |
+|                  Audio Manager                               |
+|                 - Priority queue                             |
+|                 - Speech synthesis                           |
+|                 - Collision alerts                           |
+|                                                              |
+|                                                              |
+|--------------------------------------------------------------|
+
+                           |
+                       JSON HTTP
+                            |
+
+                         BACKEND
+|--------------------------------------------------------------|
+|                                                              |
+|                                                              |
+|                 Flask Application Layer                      |
+|    /detect_image  /calculate_path  /reset_tracking  /health  |
+|                      |                                       |
+|                                                              |
+|              Detection Pipeline Manager                      |
+|    - Image preprocessing                                     |
+|    - Model inference orchestration                           |
+|    - Post-processing coordination                            |
+|                      |                                       |
+|                                                              |
+|                                                              |
+|     YOLO Detector           DeepSORT Tracker                 |
+|     - YOLOv8x-OIV7          - MobileNet                      |
+|     - 600+ classes          - Kalman Filter                  |
+|     - Conf: 0.30            - Hungarian Algo                 |
+|     - IOU: 0.65             - Re-ID features                 |
+|         |                       |                            |
+|                                                              |
+|                                                              |
+|             Analysis Components                              |
+|    - Movement Calculator                                     |
+|    - Collision Predictor                                     |
+|    - Distance Estimator                                      |
+|    - Direction Analyzer                                      |
+|    - A* Pathfinder                                           |
+|                                                              |
+|                                                              |
+|--------------------------------------------------------------|
+
+#+END_SRC
+
+* Critical Code Components
+
+** Backend Components (Refactored Modular Structure)
+
+*** 1. Model Initialization (app/services/yolo_detector.py)
+
+#+BEGIN_SRC python
+# Load YOLO model with CPU enforcement
+class YOLODetector:
+    def __init__(self, model_path='yolov8x-oiv7.pt', force_cpu=True):
+        self.model = YOLO(model_path)
+        self.model.to('cpu')  # Force CPU to avoid GPU hanging issues
+#+END_SRC
+
+*Purpose:* Loads the YOLOv8x model pre-trained on Open Images v7 dataset.
+
+*Critical Details:*
+- Uses YOLOv8x (extra-large variant) for maximum accuracy
+- Trained on 600+ object classes from Open Images v7
+- Currently forced to CPU due to GPU stability issues
+- Model weights file: ~yolov8x-oiv7.pt~
+- Singleton pattern for efficient memory usage
+
+*Performance:*
+- CPU inference: ~100-250ms per frame
+- GPU inference (when enabled): ~60-100ms per frame
+- Trade-off: Accuracy vs. Speed (x-large for accuracy)
+
+*** 2. Session-Based Tracker Management (app/services/object_tracker.py)
+
+#+BEGIN_SRC python
+class ObjectTrackingManager:
+    def __init__(self):
+        self.trackers = {}  # session_id -> DeepSort tracker
+        self.track_histories = defaultdict(lambda: deque(maxlen=30))
+
+    def get_tracker(self, session_id):
+        """Get or create a tracker for a session"""
+        if session_id not in self.trackers:
+            use_gpu = torch.cuda.is_available()
+            self.trackers[session_id] = DeepSort(
+                max_age=30,              # Keep tracks alive for 30 frames
+                n_init=3,                # 3 detections to confirm track
+                nms_max_overlap=0.7,     # NMS threshold
+                max_cosine_distance=0.4, # Re-ID threshold
+                nn_budget=100,           # Feature gallery size
+                embedder="mobilenet",    # Feature extractor
+                half=True,               # FP16 for speed
+                embedder_gpu=use_gpu
+            )
+#+END_SRC
+
+*Purpose:* Manages separate DeepSORT trackers for each user session.
+
+*Why Session-Based:*
+- Allows multiple simultaneous users
+- Each user has independent tracking state
+- Prevents track ID conflicts between users
+
+*DeepSORT Parameters Explained:*
+- max_age=10: Track survives 10 frames without detection (UPDATED 2025-10-15: reduced from 30 to prevent false track associations during quick camera panning)
+- n_init=2: Requires 2 consecutive detections before track is "confirmed" (UPDATED 2025-10-15: reduced from 3 for faster track initialization)
+- nms_max_overlap=0.7: Non-maximum suppression threshold for overlapping detections
+- max_cosine_distance=0.25: Maximum cosine distance between appearance features for matching (UPDATED 2025-10-15: reduced from 0.4 for stricter appearance matching and better discrimination between similar objects)
+- nn_budget=100: Maximum number of appearance features stored per track
+- embedder="mobilenet": Uses MobileNet for extracting appearance features
+- half=True: Uses FP16 precision for 2x speed improvement
+
+*** 3. Class Normalization and Filtering (app/constants.py & app/utils/filtering.py)
+
+#+BEGIN_SRC python
+# Constants - app/constants.py
+BLACKLISTED_CLASSES = {
+    'house', 'office building', 'building',
+    'skyscraper', 'tower'
+}
+
+CLASS_MAPPING = {
+    'man': 'person',
+    'woman': 'person',
+    'boy': 'person',
+    'girl': 'person',
+    'human face': 'person',
+    'face': 'person',
+    'head': 'person',
+    'human': 'person'
+}
+
+# Filtering - app/utils/filtering.py
+def is_class_blacklisted(class_name):
+    """Check if a class is in the blacklist"""
+    return class_name.lower() in BLACKLISTED_CLASSES
+
+def normalize_class_name(class_name):
+    """Normalize class name using mapping"""
+    normalized = class_name.lower()
+    return CLASS_MAPPING.get(normalized, class_name)
+#+END_SRC
+
+*Purpose:* Reduces noise and consolidates related object classes.
+
+*Blacklisting:*
+- Removes stationary structures unlikely to be navigation obstacles
+- Prevents audio clutter from background objects
+- Focuses on relevant, movable objects
+
+*Class Mapping:*
+- Consolidates human-related detections into single "person" class
+- Prevents duplicate announcements (e.g., "face" + "person")
+- Simplifies tracking (one track ID per person, not multiple)
+
+*** 4. IoU-Based Deduplication (app/utils/filtering.py & app/utils/geometry.py)
+
+#+BEGIN_SRC python
+# Geometry - app/utils/geometry.py
+def calculate_iou(box1, box2):
+    """Calculate Intersection over Union"""
+    x1_min, y1_min, x1_max, y1_max = box1
+    x2_min, y2_min, x2_max, y2_max = box2
+
+    # Intersection area
+    intersect_x_min = max(x1_min, x2_min)
+    intersect_y_min = max(y1_min, y2_min)
+    intersect_x_max = min(x1_max, x2_max)
+    intersect_y_max = min(y1_max, y2_max)
+
+    intersection = max(0, intersect_x_max - intersect_x_min) * \
+                   max(0, intersect_y_max - intersect_y_min)
+
+    # Union area
+    box1_area = (x1_max - x1_min) * (y1_max - y1_min)
+    box2_area = (x2_max - x2_min) * (y2_max - y2_min)
+    union = box1_area + box2_area - intersection
+
+    return intersection / union if union > 0 else 0.0
+
+# Filtering - app/utils/filtering.py
+def deduplicate_same_class_detections(detections, iou_threshold=0.5):
+    """Remove overlapping detections of same class"""
+    # Group by class
+    class_groups = {}
+    for det in detections:
+        cls = det['class_name']
+        if cls not in class_groups:
+            class_groups[cls] = []
+        class_groups[cls].append(det)
+
+    # Deduplicate within each group
+    deduplicated = []
+    for cls, group in class_groups.items():
+        group_sorted = sorted(group, key=lambda x: x['confidence'],
+                            reverse=True)
+        kept = []
+        for det in group_sorted:
+            should_keep = True
+            for kept_det in kept:
+                iou = calculate_iou(det['bbox_xyxy'],
+                                   kept_det['bbox_xyxy'])
+                if iou > iou_threshold:
+                    should_keep = False
+                    break
+            if should_keep:
+                kept.append(det)
+        deduplicated.extend(kept)
+
+    return deduplicated
+#+END_SRC
+
+*Purpose:* Eliminates duplicate detections of the same object class.
+
+*Algorithm:*
+1. Group detections by normalized class name
+2. Sort each group by confidence (highest first)
+3. For each detection, check IoU with already-kept detections
+4. If IoU > 0.5 with any kept detection, discard (it's a duplicate)
+5. Otherwise, keep the detection
+
+*Why Needed:*
+- YOLO may detect both "person" and "face" for same individual
+- After class mapping, both become "person" -> duplicates
+- Prevents double-counting and redundant announcements
+- Keeps only the highest-confidence detection
+
+*** 5. Movement Analysis (app/services/collision_detector.py)
+
+#+BEGIN_SRC python
+def calculate_movement(trajectory):
+    """Calculate movement from trajectory points"""
+    if len(trajectory) < 2:
+        return {
+            'direction': 'stationary',
+            'speed': 0,
+            'displacement': 0
+        }
+
+    # Get first and last points
+    start = trajectory[0]
+    end = trajectory[-1]
+
+    # Calculate displacement vector
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    displacement = np.sqrt(dx**2 + dy**2)
+
+    # Calculate speed (pixels per frame)
+    speed = displacement / len(trajectory)
+
+    # Calculate velocity components
+    velocity_x = dx / len(trajectory)
+    velocity_y = dy / len(trajectory)
+
+    # Calculate angle (0 deg = right, 90 deg = down,
+    #                180 deg = left, 270 deg = up)
+    angle = np.degrees(np.arctan2(dy, dx))
+
+    # Determine cardinal direction
+    if displacement < 5:
+        direction = 'stationary'
+    elif -45 <= angle < 45:
+        direction = 'moving_right'
+    elif 45 <= angle < 135:
+        direction = 'moving_down'
+    elif angle >= 135 or angle < -135:
+        direction = 'moving_left'
+    else:
+        direction = 'moving_up'
+
+    # Classify speed
+    speed_class = 'slow' if speed < 2 else \
+                  'medium' if speed < 10 else 'fast'
+
+    return {
+        'direction': direction,
+        'speed': float(speed),
+        'speed_class': speed_class,
+        'displacement': float(displacement),
+        'angle': float(angle),
+        'trajectory_length': len(trajectory),
+        'velocity_x': float(velocity_x),
+        'velocity_y': float(velocity_y)
+    }
+#+END_SRC
+
+*Purpose:* Analyzes object movement from trajectory history.
+
+*Algorithm:*
+1. Extract start and end points from trajectory
+2. Calculate displacement vector (dx, dy)
+3. Calculate total displacement magnitude
+4. Compute average speed (displacement / frames)
+5. Compute velocity components (vx, vy)
+6. Calculate movement angle using arctan2
+7. Map angle to cardinal direction
+8. Classify speed into slow/medium/fast
+
+*Output:*
+- Direction: stationary, moving_left, moving_right, moving_up, moving_down
+- Speed: pixels per frame (numeric)
+- Speed class: slow (<2px/f), medium (2-10), fast (>10)
+- Angle: -180 deg to 180 deg
+- Velocity components: for prediction
+
+*** 6. Collision Prediction (app/services/collision_detector.py)
+
+#+BEGIN_SRC python
+def predict_collision(track_center, track_movement,
+                     image_width, image_height,
+                     prediction_frames=10):
+    """Predict collision with user (camera center)"""
+    # User is at camera center
+    camera_center_x = image_width / 2
+    camera_center_y = image_height / 2
+    user_zone_radius = min(image_width, image_height) * 0.15
+
+    # Current distance to user
+    current_distance = euclidean(track_center,
+                                 (camera_center_x, camera_center_y))
+
+    # If stationary, no collision
+    if track_movement['direction'] == 'stationary':
+        return {
+            'collision_risk': False,
+            'time_to_collision': None,
+            'collision_severity': 'none'
+        }
+
+    # Predict future position
+    velocity_x = track_movement.get('velocity_x', 0)
+    velocity_y = track_movement.get('velocity_y', 0)
+
+    predicted_x = track_center[0] + (velocity_x * prediction_frames)
+    predicted_y = track_center[1] + (velocity_y * prediction_frames)
+    predicted_position = (predicted_x, predicted_y)
+
+    # Distance at predicted position
+    predicted_distance = euclidean(predicted_position,
+                                   (camera_center_x, camera_center_y))
+
+    # Check if approaching
+    is_approaching = predicted_distance < current_distance
+
+    # Calculate time to collision
+    time_to_collision = None
+    if is_approaching:
+        speed = track_movement['speed']
+        if speed > 0:
+            distance_to_close = current_distance - user_zone_radius
+            time_to_collision = distance_to_close / speed
+
+    # Determine severity
+    collision_risk = False
+    collision_severity = 'none'
+
+    if is_approaching:
+        if predicted_distance < user_zone_radius:
+            collision_risk = True
+            collision_severity = 'high'  # Will enter user zone
+        elif predicted_distance < user_zone_radius * 2:
+            collision_risk = True
+            collision_severity = 'medium'  # Getting close
+        elif current_distance < user_zone_radius * 3:
+            collision_risk = True
+            collision_severity = 'low'  # Approaching from distance
+
+    return {
+        'collision_risk': collision_risk,
+        'is_approaching': is_approaching,
+        'time_to_collision': float(time_to_collision)
+                            if time_to_collision else None,
+        'collision_severity': collision_severity,
+        'predicted_position': [float(predicted_x),
+                              float(predicted_y)],
+        'current_distance': float(current_distance),
+        'predicted_distance': float(predicted_distance),
+        'user_zone_radius': float(user_zone_radius)
+    }
+#+END_SRC
+
+*Purpose:* Predicts potential collisions based on trajectory extrapolation.
+
+*Algorithm:*
+1. Define user position as center of frame
+2. Define "user zone" as 15% of frame size (safety radius)
+3. Calculate current distance from object to user
+4. If object is stationary -> no collision risk
+5. Extrapolate position 10 frames into future using velocity
+6. Calculate predicted distance
+7. Check if object is approaching (predicted < current distance)
+8. Estimate time to collision: (distance - radius) / speed
+9. Classify severity based on predicted distance:
+   - *High:* Will enter user zone (<15% of frame)
+   - *Medium:* Will get close (<30% of frame)
+   - *Low:* Approaching but still distant (<45% of frame)
+
+*Safety-Critical:*
+- Provides early warnings (10 frames ahead)
+- Three-level severity for prioritized alerts
+- Used for critical audio announcements
+
+*** 7. A* Pathfinding (app/services/pathfinder.py)
+
+*Full implementation available in app/services/pathfinder.py*
+
+** Frontend Components (static/script.js)
+
+*Note (2025-10-15):* Frontend has been refactored into modular ES6 structure. See app/static/js/modules/ for the new architecture. The sections below reference the original script.js but have been superseded by the modular structure documented in Changelog.org.
+
+*** 1. Gyroscope Tracking (modules/gyroscope.js)
+
+#+BEGIN_SRC javascript
+// TRUE GYROSCOPE: Pure gyroscope sensor data
+let gyroscopeData = {
+    x: 0,        // Angular velocity around X axis (rad/s)
+    y: 0,        // Angular velocity around Y axis (rad/s)
+    z: 0,        // Angular velocity around Z axis (rad/s)
+    rotation_x: 0,  // Integrated rotation
+    rotation_y: 0,
+    rotation_z: 0,
+    baseline_z: 0,  // Calibration baseline
+    calibrated: false
+};
+
+async function initializeOrientation() {
+    if ('Gyroscope' in window) {
+        return await initializeModernGyroscope();
+    }
+    if (typeof DeviceMotionEvent !== 'undefined') {
+        return await initializeDeviceMotionGyroscope();
+    }
+    return false;
+}
+
+async function initializeModernGyroscope() {
+    const sensor = new Gyroscope({ frequency: 60 });
+
+    sensor.addEventListener('reading', () => {
+        const now = Date.now();
+        const dt = (now - gyroscopeData.integration_time) / 1000;
+
+        gyroscopeData.x = sensor.angularVelocityX || 0;
+        gyroscopeData.y = sensor.angularVelocityY || 0;
+        gyroscopeData.z = sensor.angularVelocityZ || 0;
+
+        // Integrate angular velocities to get rotation
+        if (dt > 0 && dt < 0.1) {
+            gyroscopeData.rotation_x += gyroscopeData.x * dt;
+            gyroscopeData.rotation_y += gyroscopeData.y * dt;
+            gyroscopeData.rotation_z += gyroscopeData.z * dt;
+        }
+        gyroscopeData.integration_time = now;
+    });
+
+    sensor.start();
+    return true;
+}
+#+END_SRC
+
+*Purpose:* Tracks device orientation using gyroscope for image rotation correction.
+
+*Two-Tier Approach:*
+1. *Modern Gyroscope API (Chrome 67+):* Direct sensor access at 60 Hz
+2. *DeviceMotionEvent (Fallback):* iOS and older browsers
+
+*Integration:* Angular velocities integrated over time to get absolute rotation
+
+*** 2. Audio Queue Management (script.js:676-803)
+
+*Priority-based audio queue system for managing announcements*
+
+*** 3. Collision Warning System (script.js:806-885)
+
+*Generates safety-critical collision warnings with adaptive timing*
+
+*** 4. Real-Time Detection Loop (modules/camera.js)
+
+*Main detection loop running every 1000ms with automatic frame capture and analysis*
+
+*** 5. Canvas Rendering and Memory Management (modules/ui.js)
+
+*Purpose:* Manages visual rendering of detection boxes, trajectories, and collision warnings on HTML5 canvas.
+
+*Key Features:*
+- Clears canvas completely each frame to prevent hitbox persistence
+- Draws bounding boxes with color-coded tracking IDs
+- Renders object trajectories for tracked objects
+- Displays collision warning indicators
+- Automatic cleanup of stale tracking data
+
+*Memory Management (Fixed 2025-10-15):*
+The system implements comprehensive cleanup to prevent memory leaks:
+1. *Stale object cleanup:* Removes tracked objects not seen for 3+ seconds
+2. *Track color cleanup:* Removes color assignments for disappeared tracks
+3. *Collision alert cleanup:* Removes alerts for disappeared objects
+4. *Canvas clearing:* ALWAYS clears canvas before redrawing (prevents hitbox persistence)
+
+*Implementation (app/static/js/modules/ui.js):*
+#+BEGIN_SRC javascript
+// Clean up stale tracked objects
+const currentTrackIds = new Set();
+detections.forEach(det => {
+    if (det.track_id !== null) currentTrackIds.add(det.track_id);
+});
+
+// Remove objects not in current frame or older than 3 seconds
+const staleThreshold = 3000;
+trackedObjects.forEach((value, trackId) => {
+    if (!currentTrackIds.has(trackId) ||
+        (Date.now() - value.lastSeen > staleThreshold)) {
+        trackedObjects.delete(trackId);
+    }
+});
+
+// Clean up track colors and collision alerts
+cleanupStaleTrackColors(currentTrackIds);
+#+END_SRC
+
+*Critical Fix (2025-10-15):*
+Prior to this fix, hitboxes persisted on canvas after objects disappeared, causing visual clutter. The fix ensures:
+- Canvas is cleared at the start of every drawDetections() call
+- Stale tracking data is removed every frame
+- No orphaned hitboxes remain after objects leave the scene
+
+* Detection and Tracking: Detailed Explanation
+
+** Overview
+
+The detection and tracking system combines multiple computer vision techniques:
+
+1. *Object Detection:* YOLOv8x identifies objects in each frame
+2. *Object Tracking:* DeepSORT maintains consistent IDs across frames
+3. *Movement Analysis:* Trajectory analysis provides direction and speed
+4. *Collision Prediction:* Linear extrapolation estimates future positions
+5. *Pathfinding:* A* algorithm plans safe navigation routes
+
+** Detection Pipeline (Detailed)
+
+*** Step 1: Image Acquisition
+
+*Frontend captures frame:*
+- Video stream from getUserMedia API
+- 640x480 resolution (typical)
+- JPEG compression at 80% quality
+- Base64 encoding for JSON transmission
+
+*Gyroscope data collection:*
+- Angular velocities (rad/s) from gyroscope sensor
+- Integrated over time to get rotation angles
+- Calibrated to baseline orientation
+
+*** Step 2: Image Preprocessing
+
+*Backend processing:*
+1. Decode base64 image to NumPy array
+2. Convert RGB -> BGR (OpenCV format)
+3. Apply rotation correction (0 deg, 90 deg, 180 deg, 270 deg)
+4. Resize to max 640px dimension (performance)
+
+*** Step 3: YOLO Detection
+
+*Model: YOLOv8x-OIV7*
+- Architecture: CSPDarknet backbone + PAN neck
+- Input: 640x640 (letterboxed)
+- Output: Bounding boxes + class probabilities
+- Confidence threshold: 0.30
+- IoU threshold (NMS): 0.65
+
+*Detection format:*
+- Class ID (0-600+)
+- Confidence score (0.30-1.00)
+- Bounding box [x1, y1, x2, y2]
+
+*** Step 4: Post-Processing
+
+1. *Class filtering:* Remove blacklisted classes
+2. *Class normalization:* Map similar classes (man/woman -> person)
+3. *Format conversion:* XYXY -> LTWH for DeepSORT
+4. *Deduplication:* IoU-based removal of overlapping same-class detections
+
+** Multi-Object Tracking (Detailed)
+
+*** DeepSORT Architecture
+
+DeepSORT combines three components:
+
+1. *Motion Model (Kalman Filter):*
+   - State vector: [x, y, w, h, vx, vy, vw, vh]
+   - Predicts next position based on velocity
+   - Updates predictions with measurements
+
+2. *Appearance Model (MobileNet):*
+   - Extracts 512-dim feature vectors
+   - Enables re-identification after occlusion
+   - Distinguishes similar objects
+
+3. *Association (Hungarian Algorithm):*
+   - Matches detections to existing tracks
+   - Cost matrix: 50% IoU + 50% appearance similarity
+   - Optimal assignment minimizes total cost
+
+*** Tracking Life Cycle
+
+*States:*
+- *Tentative:* New track, not yet confirmed (<2 matches) (UPDATED 2025-10-15)
+- *Confirmed:* Track has >=2 consecutive matches (UPDATED 2025-10-15)
+- *Lost:* Track not matched for <10 frames (UPDATED 2025-10-15)
+- *Deleted:* Track not matched for >=10 frames (UPDATED 2025-10-15)
+
+*Transition:*
+#+BEGIN_SRC
+New Detection -> Tentative (hits=1, age=0)
+                    |
+        Match in next frame?
+           Yes |     No |
+       hits++, age=0   age++
+                    |
+           hits >= 2? (UPDATED 2025-10-15: was 3)
+           Yes |     No |
+        Confirmed  Continue Tentative
+                    |
+           age > 10? (UPDATED 2025-10-15: was 30)
+           Yes |     No |
+         Deleted   Continue
+#+END_SRC
+
+** Movement Analysis (Detailed)
+
+*Input:* Trajectory of last 30 positions (deque)
+
+*Calculations:*
+1. Displacement: sqrt(dx^2 + dy^2)
+2. Speed: displacement / frames
+3. Velocity: (dx/frames, dy/frames)
+4. Angle: atan2(dy, dx) * 180/pi
+5. Direction: Cardinal mapping based on angle
+6. Speed class: slow (<2), medium (2-10), fast (>10)
+
+*Output:*
+#+BEGIN_SRC json
+{
+  "direction": "moving_right",
+  "speed": 8.34,
+  "speed_class": "medium",
+  "displacement": 250.2,
+  "angle": 23.5,
+  "velocity_x": 8.12,
+  "velocity_y": 3.33
+}
+#+END_SRC
+
+** Collision Prediction (Detailed)
+
+*Model:* Linear extrapolation with constant velocity assumption
+
+*Algorithm:*
+1. Define user zone: 15% of frame radius around center
+2. Calculate current distance to user
+3. Predict position 10 frames ahead: pos + velocity * 10
+4. Check if approaching: predicted_distance < current_distance
+5. Estimate time to collision: (distance - radius) / speed
+6. Classify severity:
+   - High: predicted_distance < 15% frame
+   - Medium: predicted_distance < 30% frame
+   - Low: current_distance < 45% frame
+
+*Assumptions:*
+- Constant velocity (linear motion)
+- User stationary at camera center
+- 2D planar motion (no depth)
+
+*Limitations:*
+- Cannot predict non-linear trajectories
+- Assumes no sudden stops/turns
+- 10-frame horizon (~8 seconds at 800ms intervals)
+
+** Pathfinding (A* Algorithm)
+
+*** Occupancy Grid Creation
+
+*Process:*
+1. Discretize image into 20x20 pixel grid cells
+2. Mark cells occupied by bounding boxes as obstacles
+3. Apply binary dilation (1 iteration) for safety margin
+
+*Example:*
+#+BEGIN_SRC
+Image: 640x480 -> Grid: 32x24 cells
+
+Before dilation:      After dilation:
+0 0 0 0 0 0 0        0 0 0 0 0 0 0
+0 0 1 1 0 0 0        0 1 1 1 1 0 0
+0 0 1 1 0 0 0   ->   0 1 1 1 1 0 0
+0 0 0 0 0 0 0        0 1 1 1 1 0 0
+
+1 = obstacle, 0 = free
+#+END_SRC
+
+*** A* Search Algorithm
+
+*Data structures:*
+- open_set: Priority queue (min-heap by f_score)
+- closed_set: Set of explored nodes
+- came_from: Parent map for path reconstruction
+- g_score: Actual cost from start
+- f_score: Estimated total cost (g + h)
+
+*Heuristic:* Manhattan distance
+#+BEGIN_SRC python
+h(a, b) = |ax - bx| + |ay - by|
+#+END_SRC
+
+*Main loop:*
+#+BEGIN_SRC python
+1. Initialize open_set with start node
+2. While open_set not empty:
+   a. Pop node with lowest f_score
+   b. If node == goal: return reconstruct_path()
+   c. For each neighbor:
+      - Skip if obstacle or out of bounds
+      - Calculate tentative g_score
+      - If better than known g_score:
+        * Update came_from, g_score, f_score
+        * Add to open_set
+3. Return None (no path found)
+#+END_SRC
+
+*Path reconstruction:*
+#+BEGIN_SRC python
+path = [goal]
+while goal in came_from:
+    goal = came_from[goal]
+    path.append(goal)
+path.reverse()
+return path
+#+END_SRC
+
+*** Path Safety Scoring
+
+*Algorithm:*
+For each waypoint, find minimum distance to nearest obstacle (within 7x7 region):
+#+BEGIN_SRC python
+safety = min(min_distance / 3.0, 1.0)
+overall_safety = mean(all_waypoint_safeties)
+#+END_SRC
+
+*Interpretation:*
+- 1.0: Perfect (no obstacles within 3 cells)
+- 0.7-1.0: Safe path
+- 0.4-0.7: Caution advised
+- 0.0-0.4: Risky path
+
+** Accessibility Features for Blind Users
+
+This project is specifically designed for visually impaired individuals with comprehensive accessibility features:
+
+*** Auto-Start Detection
+*Purpose:* Eliminate the need for visual button interaction
+
+*Implementation (app/static/script.js):*
+- Automatically starts camera and detection on page load
+- 2-second delay for initialization
+- Only activates on mobile devices (where blind users typically use the system)
+- Audio welcome message: "Welcome to blind navigation system. Starting camera and detection automatically."
+- Uses localStorage to remember user preference (autoStart=true/false)
+
+*Configuration (app/config.py):*
+- AUTO_START_DETECTION=true (default enabled)
+- Can be disabled via environment variable
+
+*** Voice Commands
+*Purpose:* Hands-free control without visual interface
+
+*Supported Commands:*
+- "start" or "begin" - Start camera and detection
+- "stop" or "pause" - Stop detection
+- "where am I" or "what's around me" - Announce all currently detected objects
+- "find [object]" - Find and navigate to specific objects (NEW: 2025-10-12)
+  * "find door" - Finds nearest door and sets navigation path
+  * "find chair" - Finds nearest chair and sets navigation path
+  * "find bench" - Finds nearest bench and sets navigation path
+  * "find table" - Finds nearest table and sets navigation path
+  * Works with any detected object class (600+ supported classes)
+- "help" - List available voice commands
+- "audio on" - Enable audio announcements
+- "audio off" - Disable audio announcements
+
+*Implementation:*
+- Uses Web Speech Recognition API (browser native)
+- Continuous listening mode (always active)
+- Automatic restart on errors (robust)
+- Works even when detection is not running
+- Visual indication not required (audio-first)
+- Desktop fallback: Starts voice recognition on first user click if auto-start fails
+
+*Voice-Activated Pathfinding (NEW):*
+The "find" command integrates with the A* pathfinding system:
+1. User says "find [object]"
+2. System searches current detections for matching objects
+3. If found: Enables pathfinding mode and sets navigation goal to object center
+4. System calculates safe path avoiding obstacles
+5. Audio announces: "Found [object] [distance] to your [direction]. Setting navigation path."
+6. Path displayed on canvas for sighted users
+
+*Object Matching:*
+- Exact match: "chair" matches "chair"
+- Partial match: "chair" matches "dining chair"
+- Case insensitive: "CHAIR" matches "chair"
+- Finds closest instance if multiple objects detected
+- Suggests similar objects if not found: "bench not found. Did you mean dining bench?"
+
+*Browser Support:*
+- Chrome/Edge (desktop + mobile): Full support
+- Safari iOS: Full support (webkit prefix)
+- Firefox: Limited support (not recommended)
+- Desktop browsers: May require user interaction (click) to activate
+
+*Desktop vs Mobile:*
+- Mobile: Voice commands start automatically on page load
+- Desktop: Attempts auto-start, falls back to activation on first click if needed
+
+*** Keyboard Shortcuts (Accessibility)
+*Purpose:* Alternative to touch/click for users with screen readers
+
+*Key Bindings:*
+- Space: Start/Stop detection
+- A: Announce current objects ("Where am I")
+- H: Help (list commands and shortcuts)
+
+*Design:*
+- Large key targets (spacebar)
+- Single-key activation (no complex combinations)
+- Non-visual feedback (audio confirmation)
+
+*** ARIA Labels and Screen Reader Support
+*Purpose:* Full compatibility with NVDA, JAWS, VoiceOver
+
+*HTML Enhancements (app/templates/index.html):*
+- role="banner" on header
+- role="main" on main content
+- role="region" on sections with aria-labelledby
+- role="toolbar" on button groups with aria-label
+- role="status" with aria-live="polite" on status indicators
+- role="log" with aria-live="polite" on detection results
+- aria-label on all interactive elements (buttons, controls)
+- aria-pressed state for toggle buttons (audio, pathfinding)
+- aria-atomic="true" for complete status announcements
+- aria-relevant="additions text" for incremental updates
+- aria-hidden="true" on purely decorative elements
+
+*Live Regions:*
+- Status indicator: aria-live="polite" (announces state changes)
+- Detection results: aria-live="polite" (announces new detections)
+- Real-time indicator: aria-live="off" (visual only, not announced)
+
+*** Audio System Configuration
+*Purpose:* Customizable speech output for different user preferences
+
+*Settings (app/config.py):*
+- SPEECH_RATE: 0.5 to 2.0 (default 1.0) - Words per minute
+- SPEECH_PITCH: 0.0 to 2.0 (default 1.0) - Voice pitch
+- SPEECH_VOLUME: 0.0 to 1.0 (default 1.0) - Volume level
+- ANNOUNCE_DELAY_MS: Milliseconds between announcements (default 3000)
+- ANNOUNCE_PRIORITY_THRESHOLD: Minimum confidence to announce (default 0.7)
+- ANNOUNCE_COLLISION_WARNINGS: Enable/disable collision audio (default true)
+
+*Environment Variables:*
+All settings can be configured via .env file:
+#+BEGIN_SRC bash
+BLIND_MODE_ENABLED=true
+AUTO_START_DETECTION=true
+VOICE_COMMANDS_ENABLED=true
+AUDIO_FEEDBACK_ENABLED=true
+SPEECH_RATE=1.2
+SPEECH_PITCH=1.0
+SPEECH_VOLUME=1.0
+ANNOUNCE_DELAY_MS=2500
+ANNOUNCE_PRIORITY_THRESHOLD=0.6
+ANNOUNCE_COLLISION_WARNINGS=true
+#+END_SRC
+
+*** Accessibility Testing Requirements
+*Critical:* Must test with actual blind users
+
+*Testing Checklist:*
+1. Close your eyes and use the system
+2. Test all voice commands without looking
+3. Verify keyboard shortcuts work without visual feedback
+4. Test with screen reader (NVDA/JAWS/VoiceOver)
+5. Verify audio announcements are clear and timely
+6. Test auto-start on mobile device
+7. Verify collision warnings are urgent and distinct
+8. Test with different speech rates/volumes
+9. Verify system works without ANY visual interaction
+10. Get feedback from actual visually impaired users
+
+*** Audio Feedback Priorities
+*Design Philosophy:* Safety-critical information interrupts everything
+
+*Priority Levels:*
+- *Critical:* Collision warnings (interrupts all, clears queue)
+- *High:* Approaching objects (2s interval, 1.1x rate)
+- *Normal:* General detections (3.5s interval, 0.95x rate)
+- *Low:* Background information (queued)
+
+*Example Audio Flow:*
+#+BEGIN_SRC
+User starts system:
+-> "Welcome to blind navigation system. Starting automatically."
+-> "Detection started. I will announce objects around you."
+
+Detection running:
+-> "2 persons close to your left"
+-> [3.5 second pause]
+-> "chair medium distance straight ahead"
+
+Collision detected:
+-> [INTERRUPTS] "Danger! person approaching directly ahead moving right at fast!"
+-> [No pause, immediate]
+-> "Danger! person approaching directly ahead moving right at fast!"
+-> [Repeats until threat passes]
+#+END_SRC
+
+** Object Tracking Lifecycle and Stale Track Management (UPDATED: 2025-10-16)
+
+*** Overview
+
+As of 2025-10-16, the tracking system has been enhanced to prevent stale track announcements. Previously, objects could be announced and drawn on the canvas after they had disappeared from the scene, causing confusion for blind users.
+
+*** Root Cause of Stale Announcements
+
+The original implementation had a critical timing issue:
+1. Canvas cleanup happened in ui.js with a 3-second stale threshold
+2. Announcement cleanup happened at the END of announceDetections() in detection.js
+3. This created a race condition where objects could be announced BEFORE cleanup
+
+*** Solution: Proactive Cleanup Before Announcements
+
+The fix restructures the announcement pipeline to clean up stale tracks BEFORE processing announcements:
+
+**** Detection.js Changes (app/static/js/modules/detection.js)
+
+#+BEGIN_SRC javascript
+// CRITICAL FIX: Build current track IDs FIRST
+const currentTrackIds = new Set();
+detections.forEach(detection => {
+    if (detection.confidence >= MIN_CONFIDENCE_THRESHOLD &&
+        detection.track_id !== null) {
+        currentTrackIds.add(detection.track_id);
+    }
+});
+
+// CRITICAL FIX: Clean up stale tracks BEFORE announcements
+const staleThreshold = TimingConfig.tracking.staleThreshold;
+previousTrackedObjects.forEach((prevData, trackId) => {
+    const isStale = !currentTrackIds.has(trackId) ||
+                    (now - prevData.lastSeen > staleThreshold);
+    if (isStale) {
+        // Clean up ALL tracking data for this ID
+        previousTrackedObjects.delete(trackId);
+        trackFirstSeen.delete(trackId);
+        trackLastMovement.delete(trackId);
+        collisionAlerts.delete(trackId);
+    }
+});
+
+// NOW process detections for announcements (after cleanup)
+#+END_SRC
+
+**** Timestamp Tracking
+
+All tracked objects now include a lastSeen timestamp:
+
+#+BEGIN_SRC javascript
+previousTrackedObjects.set(detection.track_id, {
+    class_name: detection.class_name,
+    movement: detection.movement,
+    bbox: detection.bbox,
+    collision: detection.collision,
+    lastSeen: now  // CRITICAL: Add timestamp
+});
+#+END_SRC
+
+**** Unified Stale Threshold
+
+The stale threshold is now centralized in TimingConfig:
+- Location: app/static/js/modules/timingConfig.js
+- Value: tracking.staleThreshold = 3000 (3 seconds)
+- Used consistently across canvas (ui.js) and announcements (detection.js)
+
+*** Benefits of the Fix
+
+1. *No More Ghost Announcements:* Objects are never announced after disappearing
+2. *Consistent Cleanup:* Same 3-second threshold across canvas and audio
+3. *Proactive Cleanup:* Stale tracks removed BEFORE announcements, not after
+4. *Memory Efficiency:* Tracking Maps cleaned up every frame
+5. *Simplified Debugging:* Single source of truth for stale threshold
+
+*** Audio Queue Clearing (Enhancement)
+
+In addition to cleaning up tracking state, the system also clears the audio announcement queue when each new detection response arrives. This ensures that:
+
+1. **No Stale Announcements:** Old queued announcements for disappeared objects are discarded
+2. **Synchronized State:** Canvas, tracking state, and audio queue all cleared together
+3. **Fresh Information:** Only announcements for currently visible objects are spoken
+
+**** Implementation (camera.js:336-338)
+#+BEGIN_SRC javascript
+// CRITICAL FIX: Clear audio queue when new detection response arrives
+clearAudioQueue();
+
+// Then process new detections and queue fresh announcements
+drawDetections(data.detections);
+announceDetections(data.detections);
+#+END_SRC
+
+This creates a comprehensive cleanup pipeline:
+1. New detection response arrives (every 300ms)
+2. Audio queue cleared (discards old announcements)
+3. Tracking state cleaned (removes stale tracks)
+4. Canvas cleared (removes old drawings)
+5. New data processed (fresh detections, announcements, drawings)
+
+*** Tracking State Maps
+
+The system maintains multiple Maps for tracking state:
+- previousTrackedObjects: Core tracking data with timestamps
+- trackFirstSeen: First detection time for each track ID
+- trackLastMovement: Last movement state for movement change detection
+- collisionAlerts: Last alert time for throttling collision warnings
+
+All Maps are now cleaned up proactively when tracks become stale.
+
+** Centralized Timing Configuration (NEW: 2025-10-16)
+
+*** Overview
+
+As of 2025-10-16, all timeout and delay logic has been centralized into a single configuration file for easier fine-tuning and maintenance. Previously, timing values were scattered across multiple JavaScript files, making adjustments difficult.
+
+*** TimingConfig Module (app/static/js/modules/timingConfig.js)
+
+All timing-related constants are now defined in one location:
+
+**** Detection & Camera Timing
+- loopInterval: 800ms - Main detection loop frequency
+- requestTimeout: 400ms - Detection API request timeout
+- fpsUpdateInterval: 2000ms - FPS counter update frequency
+
+**** Audio & Speech Timing
+- queueProcessDelay: 300ms - Delay between queued announcements
+- testAudioDelay: 2000ms - Test audio fetch delay
+
+**** UI Animations & Effects
+- statsAnimationDuration: 200ms - Stats pulsing effect
+- fpsAnimationDuration: 200ms - FPS visual feedback
+- realtimeStatsAnimationDuration: 200ms - Real-time stats animation
+- detectionResultsFadeDelay: 200ms - Detection results fade transition
+- orientationStatusInterval: 3000ms - Gyroscope status update interval
+
+**** Collision Alerts & Announcements
+- defaultInterval: 3000ms - Default collision alert interval
+- criticalInterval: 1000ms - High severity (CRITICAL threats)
+- mediumInterval: 2000ms - Medium severity (approaching objects)
+- lowInterval: 3500ms - Low severity (distant approaching)
+- immediateAnnouncementInterval: 2000ms - CRITICAL immediate threats
+- nearAnnouncementInterval: 4000ms - Close objects
+- mediumAnnouncementInterval: 6000ms - Medium distance objects
+- farAnnouncementInterval: 8000ms - Far objects (default)
+- stationaryThreshold: 10000ms - Time before announcing stationary objects
+- stationaryReannounce: 15000ms - Time between re-announcements
+
+**** Voice Commands & Recognition
+- errorRestartDelay: 1000ms - Delay to restart after error
+- autoRestartDelay: 500ms - Delay when recognition ends
+- initDelay: 3000ms - Delay before initializing voice recognition
+- activeMessageDelay: 5000ms - Delay for "voice commands active" announcement
+- unsupportedMessageDelay: 5000ms - Delay for browser compatibility message
+
+**** Mobile & Gyroscope Initialization
+- gyroscopePromptDelay: 2000ms - Mobile gyroscope permission prompt
+- gyroscopePermissionAlertDelay: 1500ms - Delay before showing permission confirmation
+- orientationIndicatorDelay: 1000ms - Delay to add orientation status indicator
+- detailsAutoHideDelay: 3000ms - Auto-hide project details on mobile
+- autoStartDetectionDelay: 2000ms - Auto-start camera detection
+- desktopInstructionsDelay: 1500ms - Desktop instruction audio delay
+
+**** Tracking & Object Lifecycle (NEW: 2025-10-16)
+- staleThreshold: 3000ms - Time before removing disappeared objects from tracking state
+  * Used consistently across canvas rendering and audio announcements
+  * Prevents "ghost" announcements for objects that have left the scene
+  * Proactive cleanup happens BEFORE announcements to prevent stale data
+
+*** Benefits of Centralization
+
+1. *Single Source of Truth:* All timing values in one file
+2. *Easy Fine-Tuning:* Adjust delays without searching multiple files
+3. *Consistency:* Ensures related timings remain coordinated
+4. *Documentation:* Each timing value has a clear comment explaining its purpose
+5. *Immutability:* Configuration object is frozen to prevent accidental modifications
+
+*** Usage Example
+
+#+BEGIN_SRC javascript
+import TimingConfig from './timingConfig.js';
+
+// Use in detection loop
+setInterval(detectObjects, TimingConfig.detection.loopInterval);
+
+// Use in collision alerts
+if (collision.severity === 'high') {
+    alertInterval = TimingConfig.collision.criticalInterval;
+}
+#+END_SRC
+
+** Audio Feedback System
+
+*** Directional Information
+
+*Grid zones:*
+#+BEGIN_SRC
+      0.2   0.35  0.45 0.55  0.65  0.8
+  0.3 +-------------------------------+
+      |  above                        |
+      |  FL    L   SL  SR    R  FR    |
+  0.7 +-------------------------------+
+      |  level                        |
+      |  FL    L   SL  SR    R  FR    |
+      +-------------------------------+
+      |  below                        |
+
+FL=Far Left, L=Left, SL=Slightly Left,
+SR=Slightly Right, R=Right, FR=Far Right
+#+END_SRC
+
+*** Distance Estimation
+
+*Ratio-based classification:*
+| Ratio  | Category  | Distance      | Alert Interval |
+|--------+-----------+---------------+----------------|
+| >0.30  | immediate | very close    | 2 seconds      |
+| >0.15  | near      | close         | 4 seconds      |
+| >0.05  | medium    | medium        | 6 seconds      |
+| >0.01  | far       | far           | 8 seconds      |
+| <=0.01 | distant   | very far      | 8 seconds      |
+
+*** Priority-Based Announcements
+
+*Levels:*
+- *Critical:* Immediate threats (1s interval, 1.2x rate, interrupts all)
+- *High:* Approaching objects (2s interval, 1.1x rate)
+- *Normal:* General detections (3.5s interval, 0.95x rate)
+- *Low:* Background info (queued)
+
+*Queue processing:*
+1. Sort by priority (critical -> high -> normal -> low)
+2. Critical messages clear queue and interrupt
+3. 300ms delay between announcements
+
+*** Example Announcements
+
+*Collision warnings:*
+- "Danger! person approaching directly ahead moving right at fast!"
+- "Caution! car approaching from left moving left at medium"
+
+*General detections:*
+- "2 persons close to your left"
+- "chair medium distance to your right"
+
+*Tracking events:*
+- "New person detected at right"
+- "person started moving right"
+- "person has left the area"
+
+* Performance Characteristics
+
+** Timing Breakdown (CPU Mode)
+
+| Stage                          | Time (ms) | % of Total |
+|--------------------------------+-----------+------------|
+| Frame capture & encoding       | 50        | 6.25%      |
+| Network transmission           | 30        | 3.75%      |
+| Backend decoding               | 20        | 2.50%      |
+| Image preprocessing            | 30        | 8.82%      |
+| YOLO inference                 | 150       | 44.12%     |
+| Post-processing                | 40        | 11.76%     |
+| DeepSORT tracking              | 80        | 10.00%     |
+| Movement & collision analysis  | 30        | 3.75%      |
+| JSON serialization             | 10        | 1.25%      |
+| Network return                 | 10        | 2.94%      |
+| *Total*                        | *340*     | *100%*     |
+
+*Bottleneck:* YOLO inference (44.12%)
+
+** GPU vs. CPU Performance
+
+| Metric                | CPU (Current) | GPU (Potential) |
+|-----------------------+---------------+-----------------|
+| Inference time        | 100-250ms     | 60-100ms        |
+| Total cycle time      | 340ms         | 260ms           |
+| Effective FPS         | 2.94          | 3.85            |
+| Response latency      | 340ms         | 260ms           |
+| Speedup               | 1x            | 1.31x           |
+
+*Current status:* GPU disabled due to hanging issues
+
+** Memory Usage
+
+*Backend:*
+- Flask: ~200 MB
+- YOLO model: ~350 MB
+- DeepSORT: ~50 MB
+- Per-session: ~10 MB
+- *Total:* ~660 MB + 10 MB/session
+
+*Frontend:*
+- Video stream: ~5 MB
+- Canvas: ~2 MB
+- Detections: ~1 MB
+- *Total:* ~8 MB
+
+* Safety Considerations
+
+** 1. Conservative Detection (conf=0.30)
+- Prefer false positives over false negatives
+- Missing an obstacle could cause injury
+- User can learn to filter spurious announcements
+
+** 2. Multi-Level Collision Warnings
+- High (critical): 1s interval, 1.2x rate
+- Medium (high): 2s interval, 1.1x rate
+- Low (normal): 3.5s interval, 0.95x rate
+
+** 3. Adaptive Announcement Intervals
+- Immediate: 2s (urgent)
+- Near: 4s (important)
+- Medium: 6s (moderate)
+- Far: 8s (awareness)
+
+** 4. Trajectory Prediction
+- 10-frame horizon (~8 seconds)
+- Conservative approach
+- Continuous updates every 800ms
+
+** 5. Pathfinding Safety Margin
+- Binary dilation expands obstacles
+- 10-pixel buffer zone
+- Prevents paths too close to obstacles
+
+** 6. Audio Priority System
+- Critical interrupts all speech
+- Clears queue for urgent warnings
+- Maximum volume and fastest rate
+
+* Modular Architecture Benefits
+
+** Code Organization
+- *Separation of Concerns:* Each module has single responsibility
+- *Testability:* Services can be unit tested independently
+- *Reusability:* Import only what you need
+- *Maintainability:* Easy to locate and fix issues
+
+** File Structure
+- *routes/*: API endpoints (Flask blueprints)
+- *services/*: Business logic (detection, tracking, pathfinding)
+- *utils/*: Helper functions (filtering, geometry, image processing)
+- *config.py*: Environment-specific configuration
+- *constants.py*: Application constants
+
+** Entry Points
+- *run.py:* Main application entry (54 lines)
+- *app/__init__.py:* Flask app factory with blueprints (83 lines)
+
+** Singleton Pattern
+Services use singletons to avoid recreating objects:
+- get_detector(): Returns shared YOLODetector instance
+- get_tracking_manager(): Returns shared ObjectTrackingManager
+
+* Annotation and Training Pipeline (Future Work)
+
+** Overview
+
+The project currently uses YOLOv8x-OIV7 pre-trained on Open Images v7 (600+ classes) for inference only. For domain-specific improvements, a complete annotation and training pipeline has been documented.
+
+** Dataset Creation
+
+*** Frame Extraction (utilities/framer.py)
+- Extract frames from indoor navigation videos
+- Resize to 640x640 for consistency
+- Support for multiple videos with continuous frame numbering
+- Configurable frame intervals and maximum frames per video
+
+#+BEGIN_SRC bash
+python utilities/framer.py video.mp4 -o frames -r 640x640 -i 10
+#+END_SRC
+
+*** Image Enhancement (utilities/enhancer.py)
+- CLAHE (Contrast Limited Adaptive Histogram Equalization)
+- Denoising, brightness/contrast adjustment
+- Gamma correction, sharpening
+- YOLO-optimized presets
+
+#+BEGIN_SRC bash
+python utilities/enhancer.py frames -o enhanced --preset yolo
+#+END_SRC
+
+** Annotation Workflow
+
+*** Recommended Tool: CVAT
+- Web-based annotation platform by Intel
+- Direct YOLO format export
+- Team collaboration support
+- Quality control workflows
+- See [[file:zettelkasten/annotation/20251016200200-cvat_annotation_workflow.org][CVAT Annotation Workflow]]
+
+*** Alternative Tool: LabelImg
+- Desktop application for simple annotation tasks
+- Direct YOLO and Pascal VOC export
+- Single-user, offline capability
+- See [[file:zettelkasten/annotation/20251016200900-annotation_tools_comparison.org][Annotation Tools Comparison]]
+
+*** Quality Guidelines
+- Tight bounding boxes (minimal padding)
+- Annotate partially visible objects (>30% visible)
+- Consistent class naming conventions
+- Handle occlusions and truncations appropriately
+- See [[file:zettelkasten/annotation/20251016200600-annotation_quality_guidelines.org][Annotation Quality Guidelines]]
+
+** CVAT Export to YOLO Format
+
+*** Export Process
+1. Export from CVAT in YOLO 1.1 format
+2. Reorganize into images/labels structure
+3. Split into train/val sets (80/20)
+4. Create data.yaml configuration file
+
+*** Automated Conversion Script
+See [[file:zettelkasten/annotation/20251016200400-cvat_yolo_integration.org][CVAT YOLO Integration]] for complete conversion pipeline script.
+
+** Data Augmentation
+
+*** Augmentation Tool (utilities/augScript.py)
+- Rotation (-30 deg to +30 deg)
+- Horizontal/vertical flipping
+- Brightness adjustment (0.5x to 1.5x)
+- Gaussian noise and blur
+- Automatic train/val split
+- Label file preservation
+
+#+BEGIN_SRC bash
+python utilities/augScript.py annotated_images dataset \
+    --augmentation_factor 5 --train_ratio 0.8
+#+END_SRC
+
+*** Augmentation Strategy
+- Training set: 5-10x augmentation factor
+- Validation set: NO augmentation (original images only)
+- Typical result: 100 images -> 480 train + 20 val = 500 total
+- See [[file:zettelkasten/annotation/20251016200800-dataset_augmentation_strategies.org][Dataset Augmentation Strategies]]
+
+** Model Training
+
+*** Fine-Tuning YOLOv8x-OIV7
+#+BEGIN_SRC bash
+# Fine-tune from current model
+yolo train data=dataset/data.yaml model=yolov8x-oiv7.pt epochs=50
+
+# Train from scratch (if needed)
+yolo train data=dataset/data.yaml model=yolov8x.yaml epochs=100
+
+# Resume training
+yolo train resume model=runs/detect/train/weights/last.pt
+#+END_SRC
+
+*** Training Considerations
+- Start with yolov8x-oiv7.pt weights (transfer learning)
+- 500-1000 annotated images minimum
+- Custom classes for indoor navigation (person, chair, table, door, etc.)
+- Evaluate on held-out validation set
+- Compare performance to base model before deployment
+
+** Bounding Box Formats
+
+*** XYXY Format (YOLO Output)
+- [x1, y1, x2, y2] - Top-left and bottom-right corners
+- Used by YOLO detection output
+- Converted to other formats as needed
+
+*** XYWH Center Format (YOLO Labels)
+- [x_center, y_center, width, height] - Normalized to [0, 1]
+- Used in YOLO .txt label files
+- Resolution-independent storage
+
+*** LTWH Format (DeepSORT Tracker)
+- [left, top, width, height] - Absolute pixels
+- Required by DeepSORT tracking algorithm
+- Converted from XYXY in detection pipeline
+
+See [[file:zettelkasten/annotation/20251016200000-bounding_box_formats.org][Bounding Box Formats]] and [[file:zettelkasten/codebase/20251016200700-bbox_coordinate_conversions.org][Bounding Box Coordinate Conversions]] for details.
+
+** Zettelkasten Documentation
+
+All annotation and training documentation is organized in zettelkasten/annotation/:
+
+- [[file:zettelkasten/annotation/20251016201000-annotation_and_training_moc.org][Annotation and Training MOC]] - Central hub (start here)
+- [[file:zettelkasten/annotation/20251016190000-cvat_overview.org][CVAT Overview]] - Tool features and capabilities
+- [[file:zettelkasten/annotation/20251016200200-cvat_annotation_workflow.org][CVAT Annotation Workflow]] - Step-by-step guide
+- [[file:zettelkasten/annotation/20251016200400-cvat_yolo_integration.org][CVAT YOLO Integration]] - Export and conversion
+- [[file:zettelkasten/annotation/20251016200800-dataset_augmentation_strategies.org][Dataset Augmentation Strategies]] - Augmentation pipeline
+- [[file:zettelkasten/annotation/20251016200100-yolo_label_format.org][YOLO Label Format]] - Label file specification
+- [[file:zettelkasten/annotation/20251016200300-annotation_formats_comparison.org][Annotation Formats Comparison]] - YOLO vs COCO vs VOC
+- [[file:zettelkasten/annotation/20251016200600-annotation_quality_guidelines.org][Annotation Quality Guidelines]] - Quality standards
+- [[file:zettelkasten/annotation/20251016200900-annotation_tools_comparison.org][Annotation Tools Comparison]] - Tool selection guide
+- [[file:zettelkasten/annotation/20251016200500-open_images_v7_dataset.org][Open Images v7 Dataset]] - Current model dataset
+
+** Complete Workflow Diagram
+
+#+BEGIN_EXAMPLE
+Video Files
+    |
+    v
+[framer.py] Extract frames -> 640x640 JPG
+    |
+    v
+[enhancer.py] Enhance quality (optional) -> CLAHE, denoising
+    |
+    v
+[CVAT] Annotate objects -> Bounding boxes
+    |
+    v
+Export YOLO format -> obj_train_data/
+    |
+    v
+Reorganize -> images/train, images/val, labels/train, labels/val
+    |
+    v
+[augScript.py] Augment -> 5x training data
+    |
+    v
+Create data.yaml -> Class mapping, paths
+    |
+    v
+YOLOv8 Training -> yolo train data=data.yaml model=yolov8x-oiv7.pt
+    |
+    v
+Trained Model -> best.pt
+    |
+    v
+Replace yolov8x-oiv7.pt -> Deploy to app/services/yolo_detector.py
+    |
+    v
+Test on live detection -> Evaluate performance
+#+END_EXAMPLE
+
+* Limitations and Future Work
+
+** Current Limitations
+
+1. *Monocular depth:* No stereo vision, approximate distances
+2. *2D tracking:* No depth-wise motion prediction
+3. *CPU performance:* 340ms cycle (GPU disabled)
+4. *Class confusion:* 600+ classes with some overlap
+5. *Occlusion:* Long occlusions (>8s) cause track loss (UPDATED 2025-10-15: reduced from 24s due to tracker age parameter change)
+
+** Future Enhancements
+
+1. *GPU acceleration:* 5x speedup potential
+2. *Depth sensor:* Accurate distance measurement
+3. *Semantic segmentation:* Floor vs. obstacle classification
+4. *Scene understanding:* Room recognition, doorway detection
+5. *Multi-modal feedback:* Haptic patterns, spatial audio
+6. *Cloud deployment:* Server-based inference
+7. *Offline mode:* On-device TFLite/ONNX models
+8. *Unit testing:* Comprehensive test coverage
+9. *Type hints:* Enhanced code documentation
+10. *API documentation:* OpenAPI/Swagger
+
+* Conclusion
+
+This indoor navigation system demonstrates the viability of accessible computer vision for blind assistance:
+
+*Key Achievements:*
+- Real-time detection (1000ms cycle)
+- Robust tracking (DeepSORT + Kalman filtering)
+- Safety-critical collision prediction
+- Adaptive audio announcements
+- A* pathfinding for navigation
+- Professional modular architecture
+
+*Technical Innovations:*
+- Gyroscope-based rotation correction
+- IoU-based deduplication
+- Priority-based audio queue
+- Multi-level collision warnings
+- Flask blueprint architecture
+
+*Impact:*
+- Makes visual world accessible through sound
+- Empowers blind individuals for safer navigation
+- Demonstrates practical assistive AI technology
+
+#+BEGIN_QUOTE
+"Technology should empower everyone, regardless of ability. This project is a step toward making the visual world accessible through sound, motion, and AI."
+- Project Team
+#+END_QUOTE

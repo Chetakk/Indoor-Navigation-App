@@ -1,0 +1,318 @@
+:PROPERTIES:
+:ID:       20251015184600-find_safe_direction
+:ROAM_REFS: [[file:../app/services/pathfinder.py::def find_safe_direction]]
+:END:
+#+title: find_safe_direction() Function
+#+filetags: :function:navigation:obstacle_avoidance:sampling:
+
+* Function Signature
+
+#+begin_src python
+def find_safe_direction(goal_direction, obstacles, start, image_width, image_height):
+    """
+    Find a safe walking direction that avoids obstacles while moving toward goal.
+    """
+    # ...
+#+end_src
+
+Location: app/services/pathfinder.py:341
+
+* Description
+
+Samples multiple candidate directions around the goal direction and scores
+each based on goal alignment and obstacle proximity. Returns the best scoring
+(safest) direction for user to walk.
+
+Core obstacle avoidance algorithm for reactive navigation.
+
+* Parameters
+
+- goal_direction :: np.ndarray - Normalized [x,y] vector toward goal
+- obstacles :: list[dict] - Obstacle info from calculate_reactive_navigation
+- start :: [x, y] - Current user position
+- image_width :: int - Image width (for boundary checking)
+- image_height :: int - Image height (for boundary checking)
+
+* Returns
+
+- np.ndarray :: Normalized [x,y] direction vector (safe walking direction)
+
+* Algorithm
+
+** 1. Setup Sampling
+
+#+begin_src python
+num_samples = 16
+angles = linspace(-pi/2, pi/2, num_samples)  # -90deg to +90deg
+
+goal_angle = atan2(goal_direction[1], goal_direction[0])
+
+best_direction = goal_direction.copy()
+best_score = -infinity
+#+end_src
+
+Samples 16 directions evenly spaced from -90deg to +90deg relative to goal.
+
+** 2. Score Each Direction
+
+For each angle offset:
+#+begin_src python
+test_angle = goal_angle + angle_offset
+test_direction = [cos(test_angle), sin(test_angle)]
+
+score = 0
+
+# Goal alignment (want to move toward goal)
+goal_alignment = dot(test_direction, goal_direction)
+score += goal_alignment * 10  # High weight
+
+# Obstacle penalties
+for obs in obstacles:
+    if obs['in_path']:
+        obs_direction = obs['direction']
+        alignment = dot(test_direction, obs_direction)
+
+        if alignment > 0.3:  # Obstacle in this direction
+            penalty = alignment * (50 / max(obs['distance'], 10))
+            if obs['is_moving']:
+                penalty *= 1.5  # Extra penalty for moving
+            score -= penalty
+
+# Boundary penalties (don't guide into edges)
+test_pos = start + test_direction * 100  # Project ahead
+if test_pos[0] < 50 or test_pos[0] > width - 50:
+    score -= 20
+if test_pos[1] < 50 or test_pos[1] > height - 50:
+    score -= 20
+
+if score > best_score:
+    best_score = score
+    best_direction = test_direction
+#+end_src
+
+** 3. Return Best Direction
+
+#+begin_src python
+return best_direction  # Normalized vector
+#+end_src
+
+* Scoring Breakdown
+
+** Goal Alignment Component
+#+begin_src python
+goal_alignment = dot(test_direction, goal_direction)
+score += goal_alignment * 10
+#+end_src
+
+- Range: -1 to 1 (dot product)
+- Weight: 10x
+- Effect: Strong preference for directions toward goal
+- Contribution: -10 to +10
+
+** Obstacle Penalty Component
+#+begin_src python
+if alignment > 0.3:  # Obstacle in direction (< 72deg)
+    penalty = alignment * (50 / max(distance, 10))
+    if is_moving:
+        penalty *= 1.5
+    score -= penalty
+#+end_src
+
+- Alignment threshold: 0.3 (only penalize if pointing toward obstacle)
+- Distance factor: 50/distance (closer = higher penalty)
+- Moving multiplier: 1.5x
+- Max distance: 10px minimum (prevent divide by zero)
+
+Example penalties:
+- Obstacle 50px away, alignment 1.0, stationary: -1.0
+- Obstacle 50px away, alignment 1.0, moving: -1.5
+- Obstacle 100px away, alignment 0.5, stationary: -0.25
+
+** Boundary Penalty
+#+begin_src python
+if near_edge:
+    score -= 20
+#+end_src
+
+- Penalty: -20 per edge violation
+- Buffer: 50px from edge
+- Prevents guiding user off-screen
+
+* Example Scoring
+
+Scenario: Goal at 0deg (straight ahead), person at 30deg right, 80px away, moving
+
+#+begin_example
+Direction samples and scores:
+
+-90deg: goal_align=-0.0, penalty=0    -> score = -0.0
+-60deg: goal_align= 0.5, penalty=0    -> score =  5.0
+-30deg: goal_align= 0.87, penalty=0   -> score =  8.7
+  0deg: goal_align= 1.0, penalty=0    -> score = 10.0  <- Direct to goal
+ 30deg: goal_align= 0.87, penalty=1.1 -> score =  7.6  <- Toward obstacle!
+ 60deg: goal_align= 0.5, penalty=0    -> score =  5.0
+ 90deg: goal_align=-0.0, penalty=0    -> score = -0.0
+
+Best direction: 0deg (straight ahead)
+Note: 30deg penalized despite being toward goal
+#+end_example
+
+If obstacle was closer (40px):
+#+begin_example
+ 30deg: goal_align= 0.87, penalty=1.9 -> score =  6.8  <- Higher penalty
+  0deg: goal_align= 1.0, penalty=0    -> score = 10.0  <- Still best
+#+end_example
+
+If obstacle was very close (20px) and blocking direct path:
+#+begin_example
+ 30deg: goal_align= 0.87, penalty=3.75 -> score =  5.0
+  0deg: goal_align= 1.0, penalty=3.75  -> score =  6.3  <- Still goes forward
+ -30deg: goal_align= 0.87, penalty=0   -> score =  8.7  <- BEST! Go left
+#+end_example
+
+* Sampling Resolution
+
+16 samples = 180deg / 16 = 11.25deg resolution
+
+Trade-offs:
+- Fewer samples (8): Faster, less precise
+- More samples (32): Slower, more precise
+
+16 is good balance for real-time performance.
+
+* Edge Cases
+
+** All Directions Blocked
+Always returns SOME direction (best available)
+Never fails - degradation is graceful
+
+** No Obstacles
+Returns goal_direction (score = 10)
+
+** Goal Behind User
+Goal alignment becomes negative
+May still find best direction if obstacles present
+
+** Multiple Moving Obstacles
+Each contributes penalty
+Cumulative effect finds safest gap
+
+* Performance
+
+- Time complexity: O(samples * obstacles) = O(16 * n)
+- Typical: 16 * 5 = 80 iterations
+- Each iteration: ~10 operations
+- Total: < 1ms typically
+- Negligible compared to API latency
+
+* Tuning Parameters
+
+** Number of Samples
+#+begin_src python
+num_samples = 16
+#+end_src
+
+More = better precision, slower
+Less = faster, coarser
+
+** Sample Range
+#+begin_src python
+angles = linspace(-pi/2, pi/2, num_samples)  # -90 to +90deg
+#+end_src
+
+Could expand to [-135, +135] for wider search
+Or narrow to [-45, +45] for forward-focused
+
+** Goal Weight
+#+begin_src python
+score += goal_alignment * 10
+#+end_src
+
+Higher = stronger preference for direct path
+Lower = more willing to deviate
+
+** Obstacle Penalty Formula
+#+begin_src python
+penalty = alignment * (50 / max(distance, 10))
+#+end_src
+
+Adjust 50 to change distance sensitivity
+Adjust 10 to change minimum distance threshold
+
+** Moving Obstacle Multiplier
+#+begin_src python
+if is_moving:
+    penalty *= 1.5
+#+end_src
+
+Higher = avoid moving obstacles more
+Lower = treat stationary and moving similarly
+
+** Alignment Threshold
+#+begin_src python
+if alignment > 0.3:  # Only penalize if pointing toward
+#+end_src
+
+Lower = penalize obstacles even if not pointing at them
+Higher = only penalize obstacles directly in direction
+
+** Boundary Buffer
+#+begin_src python
+if test_pos[0] < 50 or test_pos[0] > width - 50:
+#+end_src
+
+Larger = stay further from edges
+Smaller = allow closer to edges
+
+* Related Notes
+
+** Part Of
+- [[id:20251015184400-reactive_navigation][Reactive Navigation System]]
+
+** Called By
+- [[id:20251015184500-calculate_reactive_navigation][calculate_reactive_navigation()]]
+
+** Calls
+- NumPy functions (dot, linspace, cos, sin, atan2)
+
+** Related Algorithms
+- Dynamic Window Approach (DWA)
+- Vector Field Histogram (VFH)
+- Potential Fields
+
+* Comparison to Other Algorithms
+
+** vs Potential Fields
+- Potential: Smooth gradients
+- Sampling: Discrete directions
+- Potential: Can get stuck in local minima
+- Sampling: Less prone to local minima
+
+** vs Dynamic Window Approach
+- DWA: Considers robot dynamics (velocity, acceleration)
+- This: Assumes immediate direction change (human walking)
+- DWA: More complex
+- This: Simpler, sufficient for walking navigation
+
+** vs Vector Field Histogram
+- VFH: Builds polar histogram of obstacles
+- This: Direct scoring of sampled directions
+- VFH: Better for cluttered environments
+- This: Simpler, faster
+
+* Future Enhancements
+
+** Adaptive Sampling
+Sample more densely near obstacles
+
+** Velocity Consideration
+Account for user's current walking direction (momentum)
+
+** Multi-Step Lookahead
+Score not just immediate direction but 2-3 steps ahead
+
+** Smoothing
+Add penalty for sharp direction changes frame-to-frame
+
+** Obstacle Size
+Weight penalties by obstacle size (car > person)

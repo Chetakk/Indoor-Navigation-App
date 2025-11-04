@@ -1,0 +1,506 @@
+:PROPERTIES:
+:ID:       20251015131000-yolo_versions_evolution
+:ROAM_ALIASES: "YOLO Evolution" "YOLO History" "YOLO Versions"
+:END:
+#+title: YOLO Versions Evolution
+#+filetags: :yolo:history:evolution:versions:
+
+* Timeline Overview
+
+```
+2016: YOLOv1 - Original paper
+2016: YOLOv2/YOLO9000 - Major improvements
+2018: YOLOv3 - Multi-scale predictions
+2020: YOLOv4 - State-of-art techniques
+2020: YOLOv5 - PyTorch implementation
+2021: YOLOX - Anchor-free
+2022: YOLOv6 - Industrial deployment
+2022: YOLOv7 - Architecture innovations
+2023: YOLOv8 - Unified framework
+2024: YOLOv9 - Information theory approach
+2024: YOLOv10 - NMS-free
+2024: YOLOv11 - Latest iteration (CURRENT PROJECT)
+```
+
+* YOLOv1 (2016)
+
+** Revolutionary Idea
+Unified detection: Single forward pass for entire image
+
+** Architecture
+- Custom CNN: 24 conv layers + 2 FC layers
+- Inspired by GoogLeNet
+- 7x7 grid
+- 2 boxes per cell
+- 98 predictions total
+
+** Key Features
+- Real-time: 45 FPS
+- Global context: Sees entire image
+- Fewer false positives than R-CNN
+
+** Limitations
+- Limited to 2 objects per cell
+- Struggles with small objects
+- Groups of nearby objects difficult
+- Coarse spatial resolution (7x7)
+
+** Performance
+- mAP: 63.4% on PASCAL VOC
+- Fast but less accurate than Fast R-CNN
+
+* YOLOv2 / YOLO9000 (2016)
+
+** Motto: "Better, Faster, Stronger"
+
+** Major Improvements
+
+*** 1. Batch Normalization
+- All conv layers
+- 2% mAP improvement
+- Eliminates need for dropout
+
+*** 2. High Resolution Classifier
+- Pre-train at 448x448 (not 224x224)
+- Better for high-res detection
+- 4% mAP improvement
+
+*** 3. Anchor Boxes
+- Adopted from Faster R-CNN
+- K-means clustering for anchor selection
+- 5 anchors per cell
+- Increased recall
+
+*** 4. Dimension Clusters
+- K-means on dataset boxes
+- IoU distance metric (not Euclidean)
+- Better anchor priors
+
+*** 5. Direct Location Prediction
+- Constrain box center to grid cell
+- Sigmoid activation for x, y
+- 5% mAP improvement
+- Training stability
+
+*** 6. Fine-Grained Features
+- Passthrough layer: 26x26 -> 13x13
+- Combines high and low resolution
+- Better small object detection
+
+*** 7. Multi-Scale Training
+- Random input sizes: 320 to 608
+- Every 10 batches change size
+- Single network for multiple resolutions
+
+*** 8. Faster Backbone (Darknet-19)
+- 19 layers (vs 24 in v1)
+- More efficient
+- 155 conv layers total
+
+** YOLO9000
+- Joint training: Detection (COCO) + Classification (ImageNet)
+- 9000 classes detectable
+- WordTree hierarchy
+- Generalization to unseen classes
+
+** Performance
+- mAP: 78.6% on VOC 2007 (67 FPS)
+- mAP: 48.1% on COCO (40 FPS)
+
+* YOLOv3 (2018)
+
+** Motto: "An Incremental Improvement"
+
+** Key Innovations
+
+*** 1. Multi-Scale Predictions
+Three detection scales:
+- 13x13: Large objects
+- 26x26: Medium objects
+- 52x52: Small objects
+- FPN-style feature pyramid
+
+*** 2. Darknet-53 Backbone
+- 53 convolutional layers
+- Residual connections (ResNet-style)
+- Better feature extraction
+- More powerful than Darknet-19
+
+*** 3. Binary Cross-Entropy Loss
+- Replaces softmax
+- Multi-label classification
+- Better for overlapping categories
+
+*** 4. Three Anchors Per Scale
+- 9 anchors total (3 per scale)
+- K-means clustered
+- Better aspect ratio coverage
+
+*** 5. Logistic Regression for Objectness
+- Binary classification (object vs background)
+- Focal loss to handle imbalance
+
+** Architecture Details
+- Input: 416x416
+- Output: 10,647 predictions
+- 3 scales x (13^2 + 26^2 + 52^2) x 3 anchors
+
+** Performance
+- mAP: 57.9% on COCO
+- AP50: 33.0%
+- Much better than v2 on COCO
+- Excellent small object detection
+
+** Limitations
+- Slower than v2 (some accuracy for speed trade-off)
+- Complex architecture
+- Many hyperparameters
+
+* YOLOv4 (2020)
+
+** Motto: "Optimal Speed and Accuracy of Object Detection"
+
+** Philosophy
+Bag of freebies and specials:
+- Freebies: Better training, no inference cost
+- Specials: Better accuracy, small inference cost
+
+** Backbone: CSPDarknet53
+- Cross Stage Partial connections
+- Reduces computation
+- Better gradient flow
+
+** Neck: SPP + PAN
+- Spatial Pyramid Pooling (SPP)
+- Path Aggregation Network (PAN)
+- Enhanced feature aggregation
+
+** Bag of Freebies (Training)
+1. Mosaic data augmentation
+2. Self-adversarial training
+3. CIoU loss
+4. Cross mini-batch normalization
+5. Label smoothing
+6. Mish activation
+7. DropBlock regularization
+8. Cosine annealing scheduler
+
+** Bag of Specials (Inference)
+1. Mish activation
+2. SPP module
+3. SAM block (Spatial Attention Module)
+4. PAN path aggregation
+5. DIoU-NMS
+
+** Performance
+- mAP: 43.5% on COCO (65 FPS on Tesla V100)
+- AP50: 65.7%
+- Best speed-accuracy trade-off at the time
+
+** Impact
+- Comprehensive guide to modern techniques
+- Ablation studies for everything
+- Set new standard for training practices
+
+* YOLOv5 (2020)
+
+** Context
+- Released by Ultralytics (not original authors)
+- Controversial naming (parallel to v4)
+- PyTorch implementation (v1-v4 were Darknet)
+
+** Key Features
+
+*** 1. Model Family
+- YOLOv5n (nano): Smallest, fastest
+- YOLOv5s (small): Balanced
+- YOLOv5m (medium): More accurate
+- YOLOv5l (large): High accuracy
+- YOLOv5x (extra-large): Maximum accuracy
+
+*** 2. Focus Layer
+- Stem layer for efficient downsampling
+- Slice and concatenate operation
+
+*** 3. CSP Bottleneck
+- C3 module: CSP bottleneck
+- Efficient feature extraction
+
+*** 4. Auto-Anchor
+- Automatically optimize anchors
+- K-means on dataset
+
+*** 5. Production-Ready
+- Easy to train and deploy
+- Extensive documentation
+- Active community
+- Export to ONNX, TensorRT, CoreML
+
+*** 6. SiLU Activation
+- Swish activation (x * sigmoid(x))
+- Better than Leaky ReLU
+
+** Training Enhancements
+- Mosaic augmentation
+- Copy-paste augmentation
+- Random affine transformations
+- HSV color space augmentation
+- Progressive learning rate warmup
+
+** Performance (YOLOv5x)
+- mAP: 50.7% on COCO
+- AP50: 68.9%
+- Fast training and inference
+
+** Impact
+- Most popular YOLO implementation
+- Easy to use
+- Well-maintained
+- Industry standard
+
+* YOLOX (2021)
+
+** Motto: "Exceeding YOLO Series in 2021"
+
+** Key Innovation: Anchor-Free
+- No pre-defined anchors
+- Simpler and more general
+- Better for unusual aspect ratios
+
+** Decoupled Head
+- Separate branches for classification and regression
+- Better task specialization
+- Slight speed cost, accuracy gain
+
+** SimOTA (Simplified Optimal Transport Assignment)
+- Dynamic label assignment
+- Considers both classification and localization quality
+- Better than fixed IoU threshold
+
+** Strong Data Augmentation
+- MixUp
+- Mosaic
+- Better generalization
+
+** Performance
+- YOLOX-L: 50.0% mAP on COCO (68 FPS)
+- Competitive with YOLOv5
+- Simpler design
+
+* YOLOv6 (2022)
+
+** Focus: Industrial Applications
+- Meituan (Chinese company)
+- Deployment optimization
+- Hardware-aware design
+
+** Key Features
+1. Efficient Decoupled Head
+2. Self-distillation
+3. More training epochs (300)
+4. RepVGG-style backbone
+5. SimOTA label assignment
+
+** Performance (YOLOv6-L)
+- mAP: 52.8% on COCO
+- Very fast on specific hardware
+
+* YOLOv7 (2022)
+
+** Authors: Original YOLOv4 team
+
+** Key Innovations
+
+*** E-ELAN (Extended Efficient Layer Aggregation Network)
+- Improved gradient path
+- Better feature learning
+- More efficient
+
+*** Model Scaling
+- Compound scaling for detection
+- Depth, width, resolution together
+
+*** Trainable Bag-of-Freebies
+- Reparameterization
+- Auxiliary head for training
+
+### Re-parameterization
+- Training-time architecture != inference
+- Merge layers after training
+
+** Performance (YOLOv7-E6E)
+- mAP: 56.8% on COCO
+- State-of-art among YOLO variants
+
+* YOLOv8 (2023)
+
+** Released by Ultralytics
+
+** Unified Framework
+Supports multiple tasks:
+- Detection
+- Instance segmentation
+- Pose estimation
+- Classification
+- Tracking
+
+** Architecture Updates
+- Anchor-free (like YOLOX)
+- C2f module (improved CSP)
+- Decoupled head
+- New backbone design
+
+** User Experience
+- Pythonic API
+- Simple training: `yolo train`
+- Easy inference: `yolo predict`
+- CLI and Python API
+
+** Performance (YOLOv8x)
+- mAP: 53.9% on COCO
+- Excellent speed-accuracy trade-off
+- Very user-friendly
+
+* YOLOv9 (2024)
+
+** Key Innovation: PGI (Programmable Gradient Information)
+- Addresses information bottleneck
+- Better gradient flow
+- Theoretical foundation
+
+** GELAN (Generalized Efficient Layer Aggregation Network)
+- Improved architecture design
+- Better efficiency
+
+** Performance
+- YOLOv9-E: 55.6% mAP on COCO
+- Competitive with YOLOv8
+- More principled approach
+
+* YOLOv10 (2024)
+
+** Key Innovation: NMS-Free
+- Eliminates post-processing
+- Consistent latency (no NMS overhead)
+- One-to-one matching during training
+
+** Efficiency Optimizations
+- Lightweight components
+- Spatial-channel decoupled downsampling
+- Rank-guided block design
+
+** Performance (YOLOv10-X)
+- mAP: 54.4% on COCO
+- 46% fewer parameters than YOLOv9
+- Faster inference (no NMS)
+
+* YOLOv11 (2024) - CURRENT PROJECT
+
+** Latest Iteration
+- Building on YOLOv8/v10 foundation
+- Further refinements
+- State-of-art performance
+
+** Features (Based on Ultralytics YOLO11)
+- Improved architecture
+- Better training strategies
+- Enhanced model variants
+- Production-ready
+
+** Used in This Project
+- Blind navigation system
+- Real-time detection
+- Object tracking integration
+- See [[id:20251015112800-yolo_detector_class][YOLODetector Class]]
+
+* Key Trends Across Versions
+
+** Architectural Evolution
+```
+YOLOv1: Custom CNN
+YOLOv2: Darknet-19
+YOLOv3: Darknet-53
+YOLOv4: CSPDarknet53
+YOLOv5+: CSP variants
+```
+
+** Scale Evolution
+```
+YOLOv1: Single scale (7x7)
+YOLOv2: Single scale (13x13) + passthrough
+YOLOv3+: Multi-scale (13, 26, 52)
+```
+
+** Anchor Evolution
+```
+YOLOv1: No anchors
+YOLOv2-v8: Anchor-based
+YOLOX, YOLOv8+: Anchor-free
+```
+
+** Loss Evolution
+```
+YOLOv1: MSE
+YOLOv2: MSE with improvements
+YOLOv3: BCE + MSE
+YOLOv4+: CIoU + BCE
+```
+
+** Framework Evolution
+```
+YOLOv1-v4: Darknet (C)
+YOLOv5+: PyTorch
+```
+
+* Performance Comparison (COCO)
+
+```
+Model       | mAP   | FPS    | Params
+------------|-------|--------|--------
+YOLOv1      | 63%*  | 45     | 232M
+YOLOv2      | 48%   | 40     | 50M
+YOLOv3      | 58%   | 30     | 62M
+YOLOv4      | 43.5% | 65     | 64M
+YOLOv5x     | 50.7% | 60     | 87M
+YOLOv7-E6E  | 56.8% | 36     | 152M
+YOLOv8x     | 53.9% | 80     | 68M
+YOLOv11     | 54%+  | 80+    | ~70M
+
+* VOC 2007
+```
+
+* Selection Guide
+
+** For Research
+- YOLOv7: Cutting-edge techniques
+- YOLOv9: Theoretical innovations
+
+** For Production
+- YOLOv5: Mature, well-tested
+- YOLOv8: Modern, versatile
+- YOLOv11: Latest, production-ready
+
+** For Mobile/Edge
+- YOLOv5n/s: Lightweight
+- YOLOv8n: Very fast
+- YOLOv11n: Latest efficient variant
+
+** For Accuracy
+- YOLOv7-E6E: Maximum mAP
+- YOLOv8x: Balanced
+- YOLOv11x: Latest large model
+
+* Related Concepts
+
+- [[id:20251015130000-yolo_architecture_fundamentals][YOLO Architecture Fundamentals]]
+- [[id:20251015130300-object_detection_paradigms][Object Detection Paradigms]]
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+- [[id:20251015130800-feature_pyramid_networks][Feature Pyramid Networks]]
+
+* Footnotes
+
+[fn:1] YOLO family evolution driven by both research and industry needs
+
+[fn:2] Naming confusion: Multiple concurrent versions (v4/v5, v6/v7/v8)
+
+[fn:3] YOLOv5/v8 by Ultralytics most widely deployed despite naming controversy

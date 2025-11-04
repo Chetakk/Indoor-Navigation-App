@@ -1,0 +1,353 @@
+:PROPERTIES:
+:ID:       20251015130450-bounding_box_predictions
+:ROAM_ALIASES: "Bounding Box" "BBox" "Box Regression"
+:END:
+#+title: Bounding Box Predictions in Object Detection
+#+filetags: :bounding_box:object_detection:localization:regression:
+
+* Core Concept
+
+Bounding box prediction determines spatial location and extent of detected objects through regression of box coordinates.
+
+Goal: Predict tight rectangular box around object with format (x, y, w, h) or (x1, y1, x2, y2)
+
+* Bounding Box Representations
+
+** 1. Center Format (x, y, w, h)
+- (x, y): Center coordinates
+- w: Width
+- h: Height
+- Common in YOLO
+
+** 2. Corner Format (x1, y1, x2, y2)
+- (x1, y1): Top-left corner
+- (x2, y2): Bottom-right corner
+- Common in R-CNN family
+
+** 3. Min-Max Format (xmin, ymin, xmax, ymax)
+- Similar to corner format
+- Explicit min/max naming
+
+** Conversion Between Formats
+Center to Corner:
+```
+x1 = x - w/2
+y1 = y - h/2
+x2 = x + w/2
+y2 = y + h/2
+```
+
+Corner to Center:
+```
+x = (x1 + x2) / 2
+y = (y1 + y2) / 2
+w = x2 - x1
+h = y2 - y1
+```
+
+* Coordinate Encoding (YOLO Style)
+
+** Raw Network Outputs
+Network predicts: tx, ty, tw, th
+
+** Decoding to Absolute Coordinates
+
+*** Center Coordinates (x, y)
+```
+bx = sigmoid(tx) + cx
+by = sigmoid(ty) + cy
+```
+- cx, cy: Grid cell coordinates
+- sigmoid: Constrains to [0,1] within cell
+- bx, by: Absolute position in grid units
+
+*** Dimensions (w, h)
+```
+bw = pw * exp(tw)
+bh = ph * exp(th)
+```
+- pw, ph: Anchor/prior width and height
+- exp: Ensures positive values
+- bw, bh: Absolute dimensions in grid units
+
+*** Final Image Coordinates
+```
+x_image = bx * (image_width / grid_width)
+y_image = by * (image_height / grid_height)
+w_image = bw * (image_width / grid_width)
+h_image = bh * (image_height / grid_height)
+```
+
+** Sigmoid Constraint Rationale
+- Prevents box center from escaping cell
+- Ensures each cell predicts nearby objects
+- Stabilizes training
+- Grid cell responsible for objects whose center falls within it
+
+** Exponential Transform Rationale
+- Allows any positive size
+- Natural interpretation: tw=0 -> w=prior width
+- Symmetric: tw and -tw give reciprocal scales
+- Avoids numerical issues with negative/zero dimensions
+
+* Anchor-Based Prediction
+
+** Anchor Box Concept
+Pre-defined boxes with specific scales and aspect ratios
+See [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+
+** Offset Prediction
+Network predicts offsets from anchor:
+- Not absolute coordinates
+- Relative to anchor dimensions
+- Easier to learn (smaller target range)
+
+** Mathematical Formulation
+```
+Predicted box = Transform(Anchor box, Network outputs)
+
+x_pred = x_anchor + tx * w_anchor
+y_pred = y_anchor + ty * h_anchor
+w_pred = w_anchor * exp(tw)
+h_pred = h_anchor * exp(th)
+```
+
+** Benefits
+- Better initialization (starts near reasonable solution)
+- Faster convergence
+- Handles multiple scales/aspect ratios
+- Prior knowledge about object shapes
+
+* Anchor-Free Prediction
+
+** Direct Coordinate Prediction
+No pre-defined anchors:
+- Predict box directly from feature point
+- Per-pixel or per-point prediction
+- Used in FCOS, CenterNet, YOLOv1, YOLOX
+
+** CenterNet Approach
+1. Detect object center (heatmap)
+2. Predict width and height at center
+3. Optional: Offset for discretization error
+
+** FCOS Approach
+1. Per-pixel classification
+2. Predict distances to box edges: (left, top, right, bottom)
+3. Centerness score for quality
+
+** Advantages
+- Simpler (no anchor hyperparameters)
+- More flexible (not constrained by anchors)
+- Better for unusual aspect ratios
+
+** Challenges
+- May need careful design for multi-scale
+- Potentially more false positives
+- May converge slower
+
+* Box Regression Loss Functions
+
+** Mean Squared Error (MSE)
+L = (x_pred - x_true)^2 + (y_pred - y_true)^2 + (w_pred - w_true)^2 + (h_pred - h_true)^2
+
+Problems:
+- Not scale-invariant (large boxes dominate)
+- Doesn't reflect IoU directly
+- Equal weight to all coordinates
+
+** Smooth L1 Loss (Fast R-CNN)
+```
+SmoothL1(x) = 0.5*x^2 if |x| < 1
+              |x| - 0.5 otherwise
+```
+- Less sensitive to outliers than L2
+- Robust to large errors
+- Used in R-CNN family
+
+** IoU-Based Losses
+
+*** IoU Loss
+L_IoU = 1 - IoU(pred, true)
+- Directly optimizes IoU metric
+- Scale-invariant
+- Problems: Not differentiable when no overlap, unstable gradients
+
+*** GIoU Loss (Generalized IoU)
+L_GIoU = 1 - GIoU(pred, true)
+GIoU = IoU - (Area_C - Union) / Area_C
+- C: Smallest enclosing box
+- Handles non-overlapping boxes
+- Better convergence than IoU
+
+*** DIoU Loss (Distance IoU)
+L_DIoU = 1 - IoU + (d^2 / c^2)
+- d: Distance between centers
+- c: Diagonal of enclosing box
+- Directly minimizes distance
+- Faster convergence
+
+*** CIoU Loss (Complete IoU)
+L_CIoU = 1 - IoU + (d^2 / c^2) + alpha*v
+- v: Aspect ratio consistency
+- alpha: Trade-off parameter
+- Most comprehensive
+- Best performance in many cases
+
+** Modern Approach
+Combine multiple losses:
+- Classification loss (BCE, Focal)
+- Localization loss (CIoU, DIoU)
+- Objectness/confidence loss
+See [[id:20251015130900-yolo_loss_function][YOLO Loss Function]]
+
+* Training Details
+
+** Ground Truth Assignment
+Match predictions to ground truth:
+1. Compute IoU between all predictions and ground truths
+2. Assign based on highest IoU
+3. Positive: IoU > threshold (e.g., 0.5)
+4. Negative: IoU < threshold (e.g., 0.3)
+5. Ignore: Between thresholds
+
+** Target Encoding
+For matched prediction-ground truth pair:
+- Compute target offsets (reverse of decoding)
+- Network learns to predict these offsets
+- Example (YOLO):
+```
+tx_target = inverse_sigmoid(x_true / stride - cx)
+ty_target = inverse_sigmoid(y_true / stride - cy)
+tw_target = log(w_true / anchor_w)
+th_target = log(h_true / anchor_h)
+```
+
+** Gradient Flow
+- Differentiable decoding enables end-to-end training
+- Gradients flow from loss back to network outputs
+- Updates improve box predictions
+
+* Inference Details
+
+** Decoding
+Transform network outputs to bounding boxes:
+1. Apply sigmoid/exp transforms
+2. Add cell offsets
+3. Scale by anchor dimensions
+4. Convert to image coordinates
+
+** Confidence Thresholding
+Filter low-confidence predictions:
+- threshold = 0.25 (typical)
+- Drastically reduces candidates
+- Balance: Recall vs false positives
+
+** Non-Maximum Suppression (NMS)
+Remove duplicate detections:
+- Multiple predictions for same object
+- Keep highest confidence
+- Suppress overlapping boxes
+See [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+
+* Quality Metrics
+
+** Intersection over Union (IoU)
+Primary metric for localization:
+IoU = Area_intersection / Area_union
+- Range: [0, 1]
+- 1 = Perfect overlap
+- See [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+
+** Thresholds
+Common IoU thresholds:
+- 0.5: PASCAL VOC standard (lenient)
+- 0.75: Stricter localization
+- 0.5:0.95: COCO metric (average over range)
+
+** Localization Accuracy
+Measure box quality:
+- Average IoU
+- Percentage above threshold
+- Localization error (distance, size)
+
+* Common Issues and Solutions
+
+** Problem: Large Boxes Dominate Loss
+Solution:
+- IoU-based losses (scale-invariant)
+- Normalize by box size
+- Separate large/small object handling
+
+** Problem: Aspect Ratio Imbalance
+Solution:
+- Multiple anchors with different ratios
+- Anchor-free methods
+- CIoU loss (aspect ratio term)
+
+** Problem: Small Box Localization
+Solution:
+- Larger feature maps (higher resolution)
+- Specialized loss weighting
+- Focal loss for hard examples
+
+** Problem: Coordinate Discretization
+Solution:
+- Sub-pixel offsets
+- Higher resolution features
+- Offset prediction in anchor-free methods
+
+* Advanced Techniques
+
+** Rotated Bounding Boxes
+- Add rotation angle
+- Better for oriented objects (text, aerial images)
+- More complex geometry
+
+** 3D Bounding Boxes
+- Add depth dimension
+- Predict 3D orientation
+- Used in autonomous driving
+
+** Keypoint-Based Boxes
+- Predict corner keypoints
+- More flexible than rectangles
+- CornerNet, CenterNet approaches
+
+** Deformable Bounding Boxes
+- Non-rectangular shapes
+- Better fit for irregular objects
+- Higher complexity
+
+* Hyperparameter Tuning
+
+** Box Dimensions
+- Number of anchors per location
+- Anchor scales and aspect ratios
+- Clustering on dataset for optimal anchors
+
+** Loss Weights
+- Balance classification vs localization
+- Lambda_coord: Coordinate loss weight
+- Lambda_obj: Objectness loss weight
+
+** Thresholds
+- Confidence threshold: Precision/recall trade-off
+- NMS IoU threshold: Duplicate removal
+- Positive/negative assignment threshold
+
+* Related Concepts
+
+- [[id:20251015130400-yolo_grid_system][YOLO Grid System]]
+- [[id:20251015130500-anchor_boxes][Anchor Boxes]]
+- [[id:20251015130600-iou_confidence_scores][IOU and Confidence Scores]]
+- [[id:20251015130700-non_maximum_suppression][Non-Maximum Suppression]]
+- [[id:20251015130900-yolo_loss_function][YOLO Loss Function]]
+
+* Footnotes
+
+[fn:1] Box parameterization critical for training stability and convergence speed
+
+[fn:2] IoU-based losses generally outperform L1/L2 for detection tasks
+
+[fn:3] Anchor-free methods gaining popularity but anchors still dominant in YOLO

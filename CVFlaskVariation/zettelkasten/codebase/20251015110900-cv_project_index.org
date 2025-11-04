@@ -1,0 +1,61 @@
+:PROPERTIES:
+:ID:       20251015110900-cv_project_index
+:ROAM_ALIASES: "CV Project" "Main Index" "Blind Navigation"
+:END:
+#+title: CV Project - Blind Navigation System Index
+#+filetags: :index:moc:
+
+* Overview
+
+Real-time object detection and navigation assistance for blind users.
+Uses YOLO11, DeepSORT tracking, A* pathfinding, and audio feedback.
+
+* Maps of Content (MOCs)
+
+** Architecture MOCs
+- [[id:20251015111000-backend_architecture_moc][Backend Architecture MOC]]
+- [[id:20251015111100-frontend_architecture_moc][Frontend Architecture MOC]]
+- [[id:20251015111200-data_flow_moc][Data Flow MOC]]
+
+** Service MOCs
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+- [[id:20251015111400-tracking_service_moc][Tracking Service MOC]]
+- [[id:20251015111500-collision_service_moc][Collision Detection MOC]]
+- [[id:20251015111600-pathfinding_service_moc][Pathfinding Service MOC]]
+
+** Module MOCs
+- [[id:20251015111700-audio_module_moc][Audio Module MOC]]
+- [[id:20251015111800-camera_module_moc][Camera Module MOC]]
+- [[id:20251015111900-ui_module_moc][UI Module MOC]]
+
+** Concept MOCs
+- [[id:20251015112000-algorithms_moc][Algorithms MOC]]
+- [[id:20251015112100-accessibility_moc][Accessibility MOC]]
+- [[id:20251015112200-performance_moc][Performance MOC]]
+
+* Quick Links
+
+** Critical Functions
+- [[id:20251015112300-detect_image][detect_image() - Primary Detection Endpoint]]
+- [[id:20251015112400-yolo_detect][YOLODetector.detect() - Object Detection]]
+- [[id:20251015112500-update_tracks][update_tracks() - Object Tracking]]
+- [[id:20251015112600-predict_collision][predict_collision() - Collision Prediction]]
+- [[id:20251015112700-astar_pathfinding][astar_pathfinding() - Path Calculation]]
+
+** Critical Classes
+- [[id:20251015112800-yolo_detector_class][YOLODetector Class]]
+- [[id:20251015112900-object_tracking_manager_class][ObjectTrackingManager Class]]
+
+* Navigation Guide
+
+New developers should start here:
+1. [[id:20251015111200-data_flow_moc][Data Flow MOC]] - Understand complete pipeline
+2. [[id:20251015111000-backend_architecture_moc][Backend Architecture MOC]] - Backend structure
+3. [[id:20251015112300-detect_image][detect_image()]] - Main detection endpoint
+
+* Metadata
+
+- Total Notes :: 100+ atomic notes
+- Method :: org-roam
+- Format :: Emacs org-mode
+- Last Updated :: 2025-10-15

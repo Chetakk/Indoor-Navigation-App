@@ -1,0 +1,6 @@
+- Always write new changes to Changelog.org
+- always update Documentation.org with the latest info.
+- Ignore Deprecated
+- Always use basic ascii characters and no special unicode characters
+- Take Maximum use of Emacs org mode, Use things like footnotes
+- Changelog.org structure should be first header having the date time followed by the changes in THAT date time, New header for new date

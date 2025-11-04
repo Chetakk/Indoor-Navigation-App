@@ -1,0 +1,457 @@
+:PROPERTIES:
+:ID:       20251015131200-batch_normalization
+:ROAM_ALIASES: "BatchNorm" "BN" "Normalization"
+:END:
+#+title: Batch Normalization
+#+filetags: :batch_norm:normalization:training:deep_learning:
+
+* Core Concept
+
+Batch Normalization normalizes layer inputs across the mini-batch to have zero mean and unit variance, stabilizing and accelerating training.
+
+Key Innovation: Reduces internal covariate shift - the change in distribution of layer inputs during training.
+
+* The Problem: Internal Covariate Shift
+
+** Covariate Shift
+Distribution of inputs changes between training and test
+- Network must adapt to changing distributions
+- Slows learning
+
+** Internal Covariate Shift
+Distribution of inputs to internal layers changes during training:
+```
+Iteration 1: Layer inputs ~ N(0, 1)
+Iteration 100: Layer inputs ~ N(5, 10)
+Iteration 200: Layer inputs ~ N(-2, 50)
+```
+
+** Consequences
+- Each layer must continuously adapt
+- Slows convergence
+- Requires small learning rates
+- Sensitive to initialization
+- Saturation in sigmoid/tanh activations
+
+* Batch Normalization Algorithm
+
+** Forward Pass
+
+### 1. Compute Mini-Batch Statistics
+```
+mu_B = (1/m) * sum(x_i)  # Batch mean
+sigma_B^2 = (1/m) * sum((x_i - mu_B)^2)  # Batch variance
+```
+- m: Batch size
+- Computed per feature/channel
+
+### 2. Normalize
+```
+x_hat = (x - mu_B) / sqrt(sigma_B^2 + epsilon)
+```
+- epsilon: Small constant (e.g., 1e-5) for numerical stability
+- Prevents division by zero
+
+### 3. Scale and Shift (Learnable)
+```
+y = gamma * x_hat + beta
+```
+- gamma: Learnable scale parameter
+- beta: Learnable shift parameter
+- Allows network to undo normalization if beneficial
+
+** Why Scale and Shift?
+Normalization reduces representational power:
+- Constrains to zero mean, unit variance
+- gamma, beta restore full representation
+- Network learns optimal distribution
+
+Can recover identity:
+```
+If gamma = sqrt(sigma_B^2), beta = mu_B
+Then y = x  (identity mapping)
+```
+
+** Backward Pass
+Gradients computed for:
+1. Input x
+2. Parameters gamma, beta
+
+Complex chain rule through normalization
+
+* Batch Normalization in CNNs
+
+** Per-Channel Normalization
+For feature map of shape [N, C, H, W]:
+- N: Batch size
+- C: Channels
+- H, W: Height, width
+
+Statistics computed over [N, H, W] for each channel:
+```
+For channel c:
+  mu_c = mean over (batch, height, width)
+  sigma_c^2 = variance over (batch, height, width)
+```
+
+** Spatial Dimensions
+All spatial locations (H×W) normalized together:
+- Assumes spatial stationarity
+- Same normalization across image
+- Standard for CNNs
+
+** Example
+Input: [32, 256, 13, 13]
+- 32 images
+- 256 channels
+- 13×13 spatial
+
+For channel 0:
+- Compute mean/var over 32*13*13 = 5408 values
+- Normalize all 5408 values
+- 256 separate normalizations (one per channel)
+
+* Training vs Inference
+
+** Training Mode
+Use batch statistics:
+```
+mu_B = batch mean
+sigma_B^2 = batch variance
+```
+
+Also maintain running statistics:
+```
+running_mean = momentum * running_mean + (1 - momentum) * mu_B
+running_var = momentum * running_var + (1 - momentum) * sigma_B^2
+```
+- momentum: Typically 0.9 or 0.99
+
+** Inference Mode
+Use running statistics:
+```
+x_hat = (x - running_mean) / sqrt(running_var + epsilon)
+y = gamma * x_hat + beta
+```
+
+Why?
+- Inference may be single sample (batch size = 1)
+- Batch statistics unreliable for small batches
+- Running statistics estimated from entire training set
+
+** Switching Modes
+```python
+model.train()  # Use batch statistics
+model.eval()   # Use running statistics
+```
+
+Critical to switch correctly!
+
+* Benefits of Batch Normalization
+
+** 1. Faster Training
+- Allows higher learning rates (10-100x)
+- Faster convergence (fewer epochs)
+- Typical: 5-10x speedup
+
+** 2. Reduced Sensitivity to Initialization
+- Network less dependent on careful initialization
+- Can use larger initial weights
+
+** 3. Regularization Effect
+- Noise from batch statistics acts as regularizer
+- Reduces overfitting
+- May reduce need for dropout
+
+** 4. Enables Deeper Networks
+- Better gradient flow
+- Reduced vanishing/exploding gradients
+- Trains 100+ layer networks
+
+** 5. Less Sensitive to Learning Rate
+- Wider range of working learning rates
+- Easier hyperparameter tuning
+
+** 6. Reduced Saturation
+- Activations stay in non-saturated regime
+- Better for sigmoid/tanh (though ReLU more common)
+
+* Where to Place Batch Normalization?
+
+** Standard Placement (Conv-BN-Activation)
+```
+x -> Conv -> BN -> ReLU -> ...
+```
+
+Original recommendation:
+- Before activation
+- Normalize pre-activations
+
+** Alternative (Conv-Activation-BN)
+```
+x -> Conv -> ReLU -> BN -> ...
+```
+
+Some argue this works better:
+- Normalize post-activations
+- Empirical debate
+
+** Modern Practice
+Conv -> BN -> Activation is standard:
+- Used in ResNet, YOLO, most architectures
+- Well-established convention
+
+** First and Last Layers
+- First layer: Usually no BN (input already normalized)
+- Last layer: No BN (want full output range)
+
+* Batch Normalization in YOLO
+
+** Universal Usage
+- After every convolutional layer
+- Before activation function
+- Standard practice in YOLOv2+
+
+** Architecture Pattern
+```
+Conv (3x3, stride=1)
+    |
+    v
+Batch Normalization
+    |
+    v
+Leaky ReLU / SiLU
+    |
+    v
+Next Layer
+```
+
+** Impact on YOLO
+YOLOv2 paper:
+- Added BN to all conv layers
+- 2% mAP improvement
+- Eliminated dropout
+- See [[id:20251015131000-yolo_versions_evolution][YOLO Versions Evolution]]
+
+* Limitations and Issues
+
+** 1. Batch Size Dependency
+Performance degrades with small batches:
+- Batch size < 8: Noisy statistics
+- Batch size = 1: Cannot compute variance
+- Problem for high-resolution images (memory limited)
+
+** 2. Inconsistent Behavior
+Training vs inference use different statistics:
+- Can cause train-test discrepancy
+- Running statistics must be accurate
+
+** 3. Distributed Training Challenges
+Multiple GPUs have separate batches:
+- Standard BN uses per-GPU batch
+- May want cross-GPU synchronization
+- Sync BN: Expensive but more accurate
+
+** 4. Recurrent Networks
+RNNs have variable sequence lengths:
+- Batch statistics inconsistent across time
+- Layer Norm preferred for RNNs
+
+** 5. Not Always Beneficial
+Some cases where BN hurts:
+- Very small datasets
+- GANs (can be unstable)
+- Some reinforcement learning tasks
+
+* Alternatives to Batch Normalization
+
+** 1. Layer Normalization
+Normalize across features instead of batch:
+```
+mu = mean over features (for single sample)
+sigma^2 = variance over features
+```
+
+Benefits:
+- Batch size independent
+- Better for RNNs
+- Transformers use Layer Norm
+
+Usage:
+- NLP, transformers
+- Small batch scenarios
+
+** 2. Instance Normalization
+Normalize each sample independently:
+```
+For each sample, each channel:
+  mu = mean over (H, W)
+  sigma^2 = variance over (H, W)
+```
+
+Usage:
+- Style transfer
+- GANs
+- When batch statistics undesirable
+
+** 3. Group Normalization
+Divide channels into groups, normalize within groups:
+```
+For each group of channels:
+  Compute mean/variance over (group, H, W)
+```
+
+Benefits:
+- Batch size independent
+- Works well for small batches
+- Alternative to BN in detection
+
+Usage:
+- Object detection with small batches
+- Video models
+- When BN fails due to batch size
+
+** 4. Switchable Normalization
+Learnable combination of BN, Layer Norm, Instance Norm:
+```
+output = w1*BN + w2*LN + w3*IN
+```
+Weights learned during training
+
+** 5. Weight Normalization
+Normalize weights instead of activations:
+```
+w = g * v / ||v||
+```
+- g: Learnable scale
+- v: Weight vector
+
+Benefits:
+- Batch independent
+- Faster than BN
+
+* Practical Considerations
+
+** Initialization of gamma, beta
+Standard:
+- gamma = 1 (identity scale)
+- beta = 0 (zero shift)
+
+Some architectures:
+- ResNet: gamma = 0 for last BN in residual block
+- Better initialization for residual connections
+
+** Momentum for Running Statistics
+```
+running_stat = momentum * running_stat + (1-momentum) * batch_stat
+```
+
+Typical values:
+- 0.9: Fast adaptation, more noise
+- 0.99: Slow adaptation, more stable
+- PyTorch default: 0.1 (for 1-momentum)
+
+** Epsilon Value
+Numerical stability constant:
+- Typical: 1e-5
+- Too small: Numerical instability
+- Too large: Reduces normalization effect
+
+** Freezing Batch Norm
+During fine-tuning:
+```python
+model.train()  # Training mode
+for module in model.modules():
+    if isinstance(module, nn.BatchNorm2d):
+        module.eval()  # Freeze BN
+```
+
+When to freeze:
+- Small fine-tuning dataset
+- Large domain shift
+- Batch size very small
+
+* Debugging Batch Normalization
+
+** Check Running Statistics
+```python
+for name, module in model.named_modules():
+    if isinstance(module, nn.BatchNorm2d):
+        print(f"{name}:")
+        print(f"  running_mean: {module.running_mean[:5]}")
+        print(f"  running_var: {module.running_var[:5]}")
+```
+
+Issues:
+- Very large variance: Exploding activations
+- Mean far from zero: Poor convergence
+- NaN: Numerical instability
+
+** Train-Test Discrepancy
+If training accuracy high, test accuracy low:
+- Running statistics may be inaccurate
+- Increase training epochs (more updates to running stats)
+- Check train() vs eval() mode
+
+** Gradient Flow
+BatchNorm can cause gradient issues:
+- Check gradients before/after BN layers
+- Ensure gradients flowing properly
+
+* Batch Normalization in Modern Architectures
+
+** ResNet
+- BN after every conv
+- Before activation
+- Critical for training very deep ResNets
+
+** Inception
+- BN throughout
+- Enables deeper inception modules
+
+** MobileNet
+- BN after every depthwise/pointwise conv
+- Essential for efficiency
+
+** Vision Transformers
+- Use Layer Norm instead
+- BN less suitable for attention mechanisms
+
+** YOLO Family
+- BN after every conv layer
+- Standard component
+- See [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+* Advanced Topics
+
+** Batch Renormalization
+Fixes issues with small batches:
+- Clips normalization parameters
+- More stable with small/variable batch sizes
+
+** Cross-GPU Batch Normalization
+Synchronize statistics across GPUs:
+- Larger effective batch size
+- More stable statistics
+- Communication overhead
+
+** Differentiable Programming
+BN makes network non-deterministic:
+- Different statistics per batch
+- Challenges for certain applications
+- Consider alternatives if determinism required
+
+* Related Concepts
+
+- [[id:20251015130100-cnn_fundamentals][CNN Fundamentals]]
+- [[id:20251015130200-convolution_operations][Convolution Operations]]
+- [[id:20251015131100-activation_functions][Activation Functions]]
+- [[id:20251015130700-backbone_architectures][Backbone Architectures]]
+
+* Footnotes
+
+[fn:1] Batch Normalization paper (2015) revolutionized deep learning training
+
+[fn:2] Nearly universal in modern CNNs - one of most impactful techniques
+
+[fn:3] Placement before vs after activation still debated, but Conv->BN->Activation standard

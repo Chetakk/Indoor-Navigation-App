@@ -1,0 +1,127 @@
+:PROPERTIES:
+:ID:       20251015112600-predict_collision
+:ROAM_REFS: [[file:../app/services/collision_detector.py::def predict_collision]]
+:END:
+#+title: predict_collision() Function
+#+filetags: :function:collision:safety:prediction:
+
+* Function Signature
+
+#+begin_src python
+def predict_collision(track_center, track_movement, image_width,
+                      image_height, prediction_frames=None):
+    """Predict if object will collide with user (camera center)."""
+    # ...
+#+end_src
+
+Location: app/services/collision_detector.py:89
+
+* Description
+
+Predicts collision risk by extrapolating object velocity and checking proximity
+to user zone (camera center). Critical for blind user safety.
+
+* Parameters
+
+- track_center :: (x, y) - Current object position in pixels
+- track_movement :: dict - Movement info from [[id:20251015115600-calculate_movement][calculate_movement()]]
+- image_width :: int - Image width in pixels
+- image_height :: int - Image height in pixels
+- prediction_frames :: int (optional) - Frames ahead to predict (default: 10)
+
+* Returns
+
+dict with:
+- collision_risk :: bool - True if collision predicted
+- is_approaching :: bool - Object moving toward user
+- time_to_collision :: float or None - Frames until collision
+- collision_severity :: str - 'none', 'low', 'medium', 'high'
+- predicted_position :: [x, y] - Position after prediction
+- current_distance :: float - Current distance to user
+- predicted_distance :: float - Distance after prediction
+- user_zone_radius :: float - Safety zone radius
+
+* Algorithm
+
+1. Define user zone:
+   #+begin_src python
+   camera_center = (image_width / 2, image_height / 2)
+   user_zone_radius = min(width, height) * 0.15  # 15% of frame
+   #+end_src
+
+2. Calculate current distance:
+   #+begin_src python
+   current_distance = euclidean(track_center, camera_center)
+   #+end_src
+
+3. Check if stationary (early exit):
+   #+begin_src python
+   if track_movement['direction'] == 'stationary':
+       return no_collision_result
+   #+end_src
+
+4. Predict future position via [[id:20251015115700-velocity_extrapolation][velocity extrapolation]]:
+   #+begin_src python
+   predicted_x = track_center[0] + velocity_x * prediction_frames
+   predicted_y = track_center[1] + velocity_y * prediction_frames
+   predicted_distance = euclidean(predicted_pos, camera_center)
+   #+end_src
+
+5. Check if approaching:
+   #+begin_src python
+   is_approaching = predicted_distance < current_distance
+   #+end_src
+
+6. Calculate time to collision:
+   #+begin_src python
+   if is_approaching and speed > 0:
+       distance_to_close = current_distance - user_zone_radius
+       time_to_collision = distance_to_close / speed
+   #+end_src
+
+7. Classify severity:
+   - High :: predicted_distance < user_zone_radius
+   - Medium :: predicted_distance < user_zone_radius * 2
+   - Low :: current_distance < user_zone_radius * 3 and approaching
+
+* Constants
+
+From [[id:20251015115800-constants_collision][Collision Constants]]:
+- USER_ZONE_RADIUS_FACTOR = 0.15
+- COLLISION_PREDICTION_FRAMES = 10
+- STATIONARY_THRESHOLD = 5
+
+* Audio Announcements
+
+Triggers different priority levels in [[id:20251015115900-audio_speak][speak()]]:
+- High Severity :: "Danger!" - critical priority
+- Medium Severity :: "Caution!" - high priority
+- Low Severity :: "[object] approaching" - normal priority
+
+See [[id:20251015116000-collision_audio_mapping][Collision Audio Mapping]]
+
+* Related Notes
+
+** Part Of
+- [[id:20251015111500-collision_service_moc][Collision Detection MOC]]
+
+** Called By
+- [[id:20251015112300-detect_image][detect_image()]]
+
+** Uses
+- [[id:20251015115600-calculate_movement][calculate_movement()]] - Get velocity
+- [[id:20251015115700-velocity_extrapolation][Velocity Extrapolation]] - Predict position
+- [[id:20251015116100-euclidean_distance][Euclidean Distance]] - Distance calculation
+
+** Triggers
+- [[id:20251015115900-audio_speak][speak()]] - Audio warnings
+- [[id:20251015116200-check_collision_warnings][checkCollisionWarnings()]] - Frontend handling
+
+* Limitations
+
+- Assumes constant velocity (no acceleration)
+- 2D plane only (no depth perception)
+- Prediction accuracy decreases with prediction_frames
+- Works best for objects moving at constant speed
+
+See [[id:20251015116300-collision_limitations][Collision Detection Limitations]]

@@ -1,0 +1,2192 @@
+// Global variables
+let stream = null;
+let detectionActive = false;
+let detectionInterval = null;
+let objectCount = 0;
+let frameCount = 0;
+let startTime = Date.now();
+let avgConfidence = 0;
+let canvas, ctx, video;
+let speechSynth = window.speechSynthesis;
+let lastAnnouncement = {};
+let audioEnabled = true;
+let currentAbortController = null; // For cancelling pending requests
+let isProcessingRequest = false; // Prevent multiple simultaneous requests
+
+// Tracking variables
+let trackingEnabled = true;
+let trackedObjects = new Map(); // Store tracked objects by ID
+let trackColors = {}; // Store colors for each track ID
+let previousTrackedObjects = new Map(); // Store previous frame's tracks for comparison
+let trackFirstSeen = new Map(); // Track when each object was first detected
+let trackLastMovement = new Map(); // Track last movement state for each object
+
+// Pathfinding and collision variables
+let navigationPath = null;
+let navigationGoal = null;
+let collisionAlerts = new Map(); // Track when we last alerted for each object
+let pathfindingEnabled = false;
+
+// Audio announcement queue system
+let audioQueue = [];
+let isPlayingAudio = false;
+
+// TRUE GYROSCOPE: Pure gyroscope sensor data
+let gyroscopeData = {
+    x: 0,        // Angular velocity around X axis (rad/s)
+    y: 0,        // Angular velocity around Y axis (rad/s) 
+    z: 0,        // Angular velocity around Z axis (rad/s)
+    last_update: 0,
+    initialized: false,
+    calibrated: false,
+    // Integrated rotation angles from angular velocities
+    rotation_x: 0,  // Cumulative rotation around X axis
+    rotation_y: 0,  // Cumulative rotation around Y axis  
+    rotation_z: 0,  // Cumulative rotation around Z axis
+    baseline_z: 0,  // Baseline Z rotation for calibration
+    integration_time: 0
+};
+let gyroscopePermissionGranted = false;
+
+// REAL GYROSCOPE: Initialize actual gyroscope sensor
+async function initializeOrientation() {
+    console.log('🎯 Initializing TRUE gyroscope sensor...');
+    
+    try {
+        // Check if Gyroscope API is supported
+        if ('Gyroscope' in window) {
+            console.log('🔬 Modern Gyroscope API detected');
+            return await initializeModernGyroscope();
+        }
+        
+        // Fallback to DeviceMotionEvent for gyroscope data
+        if (typeof DeviceMotionEvent !== 'undefined') {
+            console.log('📱 Using DeviceMotionEvent for gyroscope data');
+            return await initializeDeviceMotionGyroscope();
+        }
+        
+        console.warn('❌ No gyroscope APIs available');
+        return false;
+        
+    } catch (error) {
+        console.error('❌ Error initializing gyroscope:', error);
+        return false;
+    }
+}
+
+// Modern Gyroscope API (Chrome 67+)
+async function initializeModernGyroscope() {
+    try {
+        // Request permission for gyroscope
+        const permission = await navigator.permissions.query({ name: 'gyroscope' });
+        console.log('Modern gyroscope permission:', permission.state);
+        
+        if (permission.state === 'denied') {
+            console.warn('❌ Modern gyroscope permission denied');
+            return false;
+        }
+        
+        // Create gyroscope sensor
+        const sensor = new Gyroscope({ frequency: 60 }); // 60 Hz
+        
+        sensor.addEventListener('reading', () => {
+            const now = Date.now();
+            const dt = gyroscopeData.integration_time > 0 ? (now - gyroscopeData.integration_time) / 1000 : 0;
+            
+            gyroscopeData.x = sensor.angularVelocityX || 0;
+            gyroscopeData.y = sensor.angularVelocityY || 0; 
+            gyroscopeData.z = sensor.angularVelocityZ || 0;
+            gyroscopeData.last_update = now;
+            
+            // Integrate angular velocities to get rotation angles
+            if (dt > 0 && dt < 0.1) { // Ignore large time gaps
+                gyroscopeData.rotation_x += gyroscopeData.x * dt;
+                gyroscopeData.rotation_y += gyroscopeData.y * dt;
+                gyroscopeData.rotation_z += gyroscopeData.z * dt;
+            }
+            gyroscopeData.integration_time = now;
+            
+            // Auto-calibrate baseline
+            if (!gyroscopeData.calibrated && Math.abs(gyroscopeData.z) < 0.1) {
+                gyroscopeData.baseline_z = gyroscopeData.rotation_z;
+                gyroscopeData.calibrated = true;
+                console.log('🎯 Modern gyroscope calibrated - baseline Z:', gyroscopeData.baseline_z.toFixed(3));
+            }
+            
+            if (!gyroscopeData.initialized) {
+                gyroscopeData.initialized = true;
+                console.log('✅ Modern gyroscope initialized');
+            }
+        });
+        
+        sensor.addEventListener('error', event => {
+            console.error('❌ Modern gyroscope error:', event.error);
+        });
+        
+        sensor.start();
+        gyroscopePermissionGranted = true;
+        console.log('✅ Modern gyroscope started successfully');
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Modern gyroscope initialization failed:', error);
+        return false;
+    }
+}
+
+// DeviceMotionEvent gyroscope fallback
+async function initializeDeviceMotionGyroscope() {
+    try {
+        // Request permission for iOS 13+
+        if (typeof DeviceMotionEvent.requestPermission === 'function') {
+            console.log('📱 iOS detected - requesting motion permission...');
+            
+            const permission = await DeviceMotionEvent.requestPermission();
+            console.log('DeviceMotion permission result:', permission);
+            
+            if (permission !== 'granted') {
+                console.warn('❌ iOS motion permission denied');
+                return false;
+            }
+        }
+        
+        // Set up device motion listener for gyroscope data
+        window.addEventListener('devicemotion', (event) => {
+            if (event.rotationRate) {
+                const now = Date.now();
+                const dt = gyroscopeData.integration_time > 0 ? (now - gyroscopeData.integration_time) / 1000 : 0;
+                
+                // Get angular velocities in rad/s
+                gyroscopeData.x = (event.rotationRate.beta || 0) * (Math.PI / 180); // Convert deg/s to rad/s
+                gyroscopeData.y = (event.rotationRate.gamma || 0) * (Math.PI / 180);
+                gyroscopeData.z = (event.rotationRate.alpha || 0) * (Math.PI / 180);
+                gyroscopeData.last_update = now;
+                
+                // Integrate angular velocities to get rotation angles
+                if (dt > 0 && dt < 0.1) { // Ignore large time gaps
+                    gyroscopeData.rotation_x += gyroscopeData.x * dt;
+                    gyroscopeData.rotation_y += gyroscopeData.y * dt;
+                    gyroscopeData.rotation_z += gyroscopeData.z * dt;
+                }
+                gyroscopeData.integration_time = now;
+                
+                // Auto-calibrate baseline when device is still
+                if (!gyroscopeData.calibrated && 
+                    Math.abs(gyroscopeData.x) < 0.1 && 
+                    Math.abs(gyroscopeData.y) < 0.1 && 
+                    Math.abs(gyroscopeData.z) < 0.1) {
+                    gyroscopeData.baseline_z = gyroscopeData.rotation_z;
+                    gyroscopeData.calibrated = true;
+                    console.log('🎯 DeviceMotion gyroscope calibrated - baseline Z:', gyroscopeData.baseline_z.toFixed(3));
+                }
+                
+                if (!gyroscopeData.initialized) {
+                    gyroscopeData.initialized = true;
+                    console.log('✅ DeviceMotion gyroscope initialized');
+                }
+                
+                // Debug log every 5 seconds
+                if (Date.now() % 5000 < 100) {
+                    console.log('🎯 True gyroscope data:', {
+                        'x (rad/s)': gyroscopeData.x.toFixed(3),
+                        'y (rad/s)': gyroscopeData.y.toFixed(3),
+                        'z (rad/s)': gyroscopeData.z.toFixed(3),
+                        'rotation_z (rad)': gyroscopeData.rotation_z.toFixed(3),
+                        calibrated: gyroscopeData.calibrated
+                    });
+                }
+            }
+        }, true);
+        
+        gyroscopePermissionGranted = true;
+        gyroscopeData.integration_time = Date.now();
+        console.log('✅ DeviceMotion gyroscope tracking initialized');
+        return true;
+        
+    } catch (error) {
+        console.error('❌ DeviceMotion gyroscope initialization failed:', error);
+        return false;
+    }
+}
+
+// TRUE GYROSCOPE: Calculate rotation from pure gyroscope angular velocities
+function calculateGyroscopeRotation() {
+    if (!gyroscopeData.initialized || !gyroscopeData.calibrated) {
+        return 0;
+    }
+    
+    // Use integrated Z-axis rotation (yaw) for screen rotation
+    const currentRotationZ = gyroscopeData.rotation_z;
+    const baselineRotationZ = gyroscopeData.baseline_z;
+    
+    // Calculate rotation relative to baseline in radians
+    let rotationRad = currentRotationZ - baselineRotationZ;
+    
+    // Convert to degrees
+    let rotationDeg = rotationRad * (180 / Math.PI);
+    
+    // Normalize to -180 to 180 range
+    while (rotationDeg > 180) rotationDeg -= 360;
+    while (rotationDeg < -180) rotationDeg += 360;
+    
+    // Apply thresholds to avoid micro-corrections from sensor noise
+    if (Math.abs(rotationDeg) < 5) {
+        rotationDeg = 0;  // Dead zone for small rotations
+    }
+    
+    // Snap to common angles for stability (with tighter tolerances for gyroscope)
+    if (Math.abs(rotationDeg - 90) < 8) rotationDeg = 90;        // Portrait right
+    else if (Math.abs(rotationDeg + 90) < 8) rotationDeg = -90;  // Portrait left
+    else if (Math.abs(Math.abs(rotationDeg) - 180) < 8) {        // Upside down
+        rotationDeg = rotationDeg > 0 ? 180 : -180;
+    }
+    
+    console.log('🎯 True gyroscope rotation calculation:', {
+        currentRotationZ: currentRotationZ.toFixed(4),
+        baselineRotationZ: baselineRotationZ.toFixed(4),
+        rotationRad: rotationRad.toFixed(4),
+        rotationDeg: rotationDeg.toFixed(1)
+    });
+    
+    return rotationDeg;
+}
+
+// TRUE GYROSCOPE: Get pure gyroscope sensor data
+function getCurrentOrientation() {
+    const now = Date.now();
+    
+    console.log('📊 Getting TRUE gyroscope data:', {
+        permissionGranted: gyroscopePermissionGranted,
+        initialized: gyroscopeData.initialized,
+        calibrated: gyroscopeData.calibrated,
+        dataAge: gyroscopeData.last_update ? (now - gyroscopeData.last_update) : 'never',
+        angularVelocityZ: gyroscopeData.z?.toFixed(4) + ' rad/s',
+        integratedRotationZ: gyroscopeData.rotation_z?.toFixed(4) + ' rad'
+    });
+    
+    // Return null if not properly initialized
+    if (!gyroscopePermissionGranted || !gyroscopeData.initialized) {
+        console.warn('⚠️ True gyroscope not initialized');
+        return null;
+    }
+    
+    // Calculate rotation from integrated gyroscope data
+    const calculatedRotation = calculateGyroscopeRotation();
+    
+    // Return true gyroscope-based orientation data
+    return {
+        // Pure gyroscope rotation calculation
+        gyroscope_rotation: calculatedRotation,
+        // Raw gyroscope angular velocities (rad/s)
+        angular_velocity_x: gyroscopeData.x,
+        angular_velocity_y: gyroscopeData.y,
+        angular_velocity_z: gyroscopeData.z,
+        // Integrated rotation angles (rad)
+        integrated_rotation_x: gyroscopeData.rotation_x,
+        integrated_rotation_y: gyroscopeData.rotation_y,
+        integrated_rotation_z: gyroscopeData.rotation_z,
+        // Baseline for calibration
+        baseline_rotation_z: gyroscopeData.baseline_z,
+        timestamp: gyroscopeData.last_update,
+        data_age_ms: now - gyroscopeData.last_update,
+        calibrated: gyroscopeData.calibrated,
+        source: 'true_gyroscope'
+    };
+}
+
+// TRUE GYROSCOPE: Manual calibration function
+function calibrateGyroscope() {
+    console.log('🎯 Manual TRUE gyroscope calibration...');
+    
+    if (!gyroscopePermissionGranted || !gyroscopeData.initialized) {
+        alert('❌ True gyroscope not available. Please enable gyroscope tracking first.');
+        return;
+    }
+    
+    // Set current integrated rotation as baseline
+    gyroscopeData.baseline_z = gyroscopeData.rotation_z;
+    gyroscopeData.calibrated = true;
+    
+    const message = `✅ TRUE Gyroscope Calibrated!
+Current orientation set as baseline:
+• Z Rotation: ${gyroscopeData.baseline_z.toFixed(4)} rad
+• Angular Velocity Z: ${gyroscopeData.z.toFixed(4)} rad/s
+
+Hold your phone in this position during detection for best results.`;
+    
+    console.log('🎯 Manual TRUE gyroscope calibration completed:', {
+        baseline_rotation_z: gyroscopeData.baseline_z.toFixed(4),
+        current_angular_velocity_z: gyroscopeData.z.toFixed(4)
+    });
+    
+    alert(message);
+    speak('True gyroscope calibrated successfully');
+}
+
+// TRUE GYROSCOPE: Request gyroscope permission with calibration
+async function requestOrientationPermission() {
+    console.log('🔑 Manual TRUE gyroscope permission request...');
+    
+    try {
+        const success = await initializeOrientation();
+        if (success) {
+            // Wait a moment for initial readings
+            setTimeout(() => {
+                alert('✅ TRUE Gyroscope tracking enabled!\n\n🎯 This uses actual gyroscope sensor data (angular velocities) for precise rotation detection.\n\nPlease hold your phone steady and tap "Calibrate" to set the baseline position.');
+                
+                // Test the gyroscope data immediately
+                const testData = getCurrentOrientation();
+                console.log('🧪 Test TRUE gyroscope data after permission:', testData);
+                if (testData) {
+                    speak('True gyroscope tracking is now active. Please calibrate your baseline position for accurate rotation detection.');
+                }
+            }, 1500);
+        } else {
+            alert('❌ Could not enable TRUE gyroscope tracking. Detection will work but without rotation correction.');
+        }
+    } catch (error) {
+        console.error('Error requesting gyroscope permission:', error);
+        alert('❌ Error requesting TRUE gyroscope permission: ' + error.message);
+    }
+}
+
+// NEW: Get object direction based on bounding box position
+function getObjectDirection(bbox, imageWidth, imageHeight) {
+    const [x1, y1, x2, y2] = bbox;
+    
+    // Calculate center point of the bounding box
+    const centerX = (x1 + x2) / 2;
+    const centerY = (y1 + y2) / 2;
+    
+    // Normalize coordinates to 0-1 range
+    const normalizedX = centerX / imageWidth;
+    const normalizedY = centerY / imageHeight;
+    
+    console.log(`Object center: (${centerX.toFixed(1)}, ${centerY.toFixed(1)}) 
+                 Normalized: (${normalizedX.toFixed(2)}, ${normalizedY.toFixed(2)})`);
+    
+    // Determine horizontal direction (more detailed zones)
+    let horizontalDirection;
+    if (normalizedX < 0.2) {
+        horizontalDirection = "far left";
+    } else if (normalizedX < 0.35) {
+        horizontalDirection = "left";
+    } else if (normalizedX < 0.45) {
+        horizontalDirection = "slightly left";
+    } else if (normalizedX < 0.55) {
+        horizontalDirection = "center";
+    } else if (normalizedX < 0.65) {
+        horizontalDirection = "slightly right";
+    } else if (normalizedX < 0.8) {
+        horizontalDirection = "right";
+    } else {
+        horizontalDirection = "far right";
+    }
+    
+    // Determine vertical direction
+    let verticalDirection;
+    if (normalizedY < 0.3) {
+        verticalDirection = "above";
+    } else if (normalizedY < 0.7) {
+        verticalDirection = "level";
+    } else {
+        verticalDirection = "below";
+    }
+    
+    // Combine directions for natural speech
+    let direction;
+    if (horizontalDirection === "center") {
+        if (verticalDirection === "above") {
+            direction = "ahead and above";
+        } else if (verticalDirection === "below") {
+            direction = "ahead and below";
+        } else {
+            direction = "directly ahead";
+        }
+    } else {
+        if (verticalDirection === "above") {
+            direction = horizontalDirection + " and above";
+        } else if (verticalDirection === "below") {
+            direction = horizontalDirection + " and below";
+        } else {
+            direction = horizontalDirection;
+        }
+    }
+    
+    return {
+        direction: direction,
+        horizontal: horizontalDirection,
+        vertical: verticalDirection,
+        coordinates: { x: normalizedX, y: normalizedY }
+    };
+}
+
+// Update statistics - Core function
+function updateStats(detections) {
+    console.log('Updating stats with', detections.length, 'detections');
+    
+    const objectCountEl = document.getElementById('objectCount');
+    const confidenceAvgEl = document.getElementById('confidenceAvg');
+    
+    // Update object count
+    objectCount = detections.length;
+    if (objectCountEl) {
+        objectCountEl.textContent = objectCount;
+        console.log('Updated object count to:', objectCount);
+    }
+    
+    // Update average confidence
+    if (detections.length > 0) {
+        const totalConfidence = detections.reduce((sum, det) => sum + det.confidence, 0);
+        avgConfidence = (totalConfidence / detections.length * 100);
+        if (confidenceAvgEl) {
+            confidenceAvgEl.textContent = avgConfidence.toFixed(1) + '%';
+            console.log('Updated avg confidence to:', avgConfidence.toFixed(1) + '%');
+        }
+    } else {
+        avgConfidence = 0;
+        if (confidenceAvgEl) {
+            confidenceAvgEl.textContent = '0%';
+        }
+    }
+
+    // Add pulsing effect to stats when they update
+    [objectCountEl, confidenceAvgEl].forEach(element => {
+        if (element) {
+            element.style.transform = 'scale(1.1)';
+            element.style.transition = 'transform 0.2s ease';
+            setTimeout(() => {
+                element.style.transform = 'scale(1)';
+            }, 200);
+        }
+    });
+}
+
+// Update FPS counter
+function updateFPS() {
+    if (!detectionActive) return;
+    
+    const now = Date.now();
+    const elapsed = (now - startTime) / 1000;
+    const fps = elapsed > 0 ? (frameCount / elapsed) : 0;
+    
+    const fpsElement = document.getElementById('fpsCounter');
+    if (fpsElement) {
+        fpsElement.textContent = fps.toFixed(1);
+        console.log('Updated FPS to:', fps.toFixed(1));
+        
+        // Add visual feedback for FPS updates
+        fpsElement.style.transform = 'scale(1.05)';
+        fpsElement.style.transition = 'transform 0.2s ease';
+        setTimeout(() => {
+            fpsElement.style.transform = 'scale(1)';
+        }, 200);
+    }
+}
+
+// Enhanced real-time statistics update
+function updateRealtimeStats() {
+    if (!detectionActive) return;
+    
+    console.log('Updating realtime stats');
+    
+    const now = Date.now();
+    const elapsed = (now - startTime) / 1000;
+    const currentFps = elapsed > 0 ? (frameCount / elapsed) : 0;
+    
+    // Update FPS
+    const fpsElement = document.getElementById('fpsCounter');
+    if (fpsElement) {
+        fpsElement.textContent = currentFps.toFixed(1);
+    }
+    
+    // Update other stats
+    const objectCountEl = document.getElementById('objectCount');
+    const confidenceAvgEl = document.getElementById('confidenceAvg');
+    
+    if (objectCountEl) {
+        objectCountEl.textContent = objectCount.toString();
+    }
+    
+    if (confidenceAvgEl) {
+        confidenceAvgEl.textContent = avgConfidence.toFixed(1) + '%';
+    }
+    
+    // Add pulsing effect to all stats
+    ['objectCount', 'fpsCounter', 'confidenceAvg'].forEach(id => {
+        const element = document.getElementById(id);
+        if (element) {
+            element.style.transform = 'scale(1.05)';
+            element.style.transition = 'transform 0.2s ease';
+            setTimeout(() => {
+                element.style.transform = 'scale(1)';
+            }, 200);
+        }
+    });
+}
+
+// Toggle audio announcements
+function toggleAudio() {
+    audioEnabled = !audioEnabled;
+    const audioBtnText = document.getElementById('audioBtnText');
+    const audioStatus = document.getElementById('audioStatus');
+    
+    if (audioEnabled) {
+        audioBtnText.innerHTML = '🔊 Audio ON';
+        audioStatus.textContent = '🔊';
+        speak('Audio announcements enabled');
+    } else {
+        audioBtnText.innerHTML = '🔇 Audio OFF';
+        audioStatus.textContent = '🔇';
+        // Stop any current speech
+        speechSynth.cancel();
+    }
+}
+
+// ENHANCED: Estimate distance with direction information
+function estimateDistance(bbox, className, imageWidth = 640, imageHeight = 480) {
+    const [x1, y1, x2, y2] = bbox;
+    const width = x2 - x1;
+    const height = y2 - y1;
+    const area = width * height;
+    
+    // Get direction information
+    const directionInfo = getObjectDirection(bbox, imageWidth, imageHeight);
+    
+    // Existing distance calculation
+    const videoArea = imageWidth * imageHeight;
+    const objectRatio = area / videoArea;
+    
+    let estimatedDistance;
+    let distanceCategory;
+    
+    // Distance estimation based on object type and size
+    if (objectRatio > 0.3) {
+        estimatedDistance = "very close";
+        distanceCategory = "immediate";
+    } else if (objectRatio > 0.15) {
+        estimatedDistance = "close";
+        distanceCategory = "near";
+    } else if (objectRatio > 0.05) {
+        estimatedDistance = "medium distance";
+        distanceCategory = "medium";
+    } else if (objectRatio > 0.01) {
+        estimatedDistance = "far";
+        distanceCategory = "far";
+    } else {
+        estimatedDistance = "very far";
+        distanceCategory = "distant";
+    }
+    
+    return { 
+        distance: estimatedDistance, 
+        category: distanceCategory, 
+        ratio: objectRatio,
+        direction: directionInfo.direction,
+        directionDetails: directionInfo
+    };
+}
+
+// Test backend connection
+async function testConnection() {
+    console.log('🧪 Testing backend connection...');
+    speak('Testing backend connection');
+
+    try {
+        console.log('📡 Fetching /test_connection...');
+        const response = await fetch('/test_connection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ test: true })
+        });
+
+        console.log('📡 Response status:', response.status);
+        console.log('📡 Response headers:', [...response.headers.entries()]);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        console.log('✅ Test response:', data);
+
+        const message = `✅ Backend connection successful!\nMessage: ${data.message}\nTimestamp: ${new Date(data.timestamp * 1000).toLocaleTimeString()}`;
+        alert(message);
+        speak('Backend connection test successful');
+
+    } catch (error) {
+        console.error('❌ Connection test failed:', error);
+        alert(`❌ Connection test failed:\n${error.message}\n\nCheck console for details.`);
+        speak('Backend connection test failed');
+    }
+}
+
+// Test stats function
+function testStats() {
+    console.log('Testing stats update...');
+
+    // Test with sample data including direction
+    const sampleDetections = [
+        { class_name: 'person', confidence: 0.85, bbox: [100, 50, 300, 400] },
+        { class_name: 'car', confidence: 0.92, bbox: [400, 200, 500, 250] },
+        { class_name: 'person', confidence: 0.78, bbox: [200, 100, 350, 450] }
+    ];
+
+    console.log('Updating stats with sample data:', sampleDetections);
+    updateStats(sampleDetections);
+    updateRealtimeDetections(sampleDetections);
+
+    // Manually increment frame count for FPS test
+    frameCount += 5;
+    updateFPS();
+
+    console.log('Stats test completed');
+}
+
+function testAudio() {
+    console.log('Testing audio with direction...');
+    console.log('Speech synthesis available:', !!speechSynth);
+    console.log('Audio enabled:', audioEnabled);
+    
+    if (!speechSynth) {
+        alert('Speech synthesis not supported in this browser');
+        return;
+    }
+    
+    // Test basic speech with direction
+    speak('Audio test: person very close to your left', 'high');
+    
+    // Test with sample detection data
+    setTimeout(() => {
+        fetch('/test_audio')
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Test detection data:', data.detections);
+                    announceDetections(data.detections);
+                }
+            })
+            .catch(error => {
+                console.error('Test audio error:', error);
+            });
+    }, 2000);
+}
+
+// Audio queue system for managing announcements by priority
+function queueAnnouncement(text, priority = 'normal') {
+    console.log('Queuing announcement:', text, 'Priority:', priority);
+    audioQueue.push({ text, priority, timestamp: Date.now() });
+    processAudioQueue();
+}
+
+// Process audio queue with priority handling
+function processAudioQueue() {
+    if (!audioEnabled || isPlayingAudio || audioQueue.length === 0) {
+        return;
+    }
+
+    // Sort by priority: critical > high > normal > low
+    const priorityOrder = { critical: 0, high: 1, normal: 2, low: 3 };
+    audioQueue.sort((a, b) => priorityOrder[a.priority] - priorityOrder[b.priority]);
+
+    // Get highest priority announcement
+    const announcement = audioQueue.shift();
+
+    // If it's critical, clear the queue and speak immediately
+    if (announcement.priority === 'critical') {
+        audioQueue = [];
+        speechSynth.cancel();
+    }
+
+    speakImmediate(announcement.text, announcement.priority);
+}
+
+// Enhanced speech function with better error handling and queue management
+function speak(text, priority = 'normal') {
+    console.log('Attempting to speak:', text, 'Priority:', priority, 'Audio enabled:', audioEnabled);
+
+    if (!audioEnabled) {
+        console.log('Audio disabled, not speaking');
+        return;
+    }
+
+    if (!speechSynth) {
+        console.error('Speech synthesis not available');
+        return;
+    }
+
+    // Check if already speaking
+    const isSpeaking = speechSynth.speaking || speechSynth.pending;
+
+    // For critical priority, interrupt immediately
+    if (priority === 'critical' && isSpeaking) {
+        console.log('Critical priority message - cancelling all speech');
+        speechSynth.cancel();
+        audioQueue = [];
+        speakImmediate(text, priority);
+        return;
+    }
+
+    // Cancel current speech only if high priority
+    if (priority === 'high' && isSpeaking) {
+        console.log('High priority message - cancelling current speech');
+        speechSynth.cancel();
+        speakImmediate(text, priority);
+        return;
+    }
+
+    // Don't speak if already speaking and normal/low priority - queue instead
+    if (isSpeaking && (priority === 'normal' || priority === 'low')) {
+        console.log('Already speaking, queueing message:', text);
+        queueAnnouncement(text, priority);
+        return;
+    }
+
+    speakImmediate(text, priority);
+}
+
+// Immediate speech function (internal use)
+function speakImmediate(text, priority) {
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    // CRITICAL: Adjust speech rate based on priority for blind navigation
+    if (priority === 'critical') {
+        utterance.rate = 1.2; // Fastest for CRITICAL warnings
+        utterance.volume = 1.0; // Maximum volume for safety
+    } else if (priority === 'high') {
+        utterance.rate = 1.1; // Faster for urgent warnings
+        utterance.volume = 1.0; // Maximum volume for safety
+    } else {
+        utterance.rate = 0.95; // Normal pace for informational
+        utterance.volume = 0.9;
+    }
+
+    utterance.pitch = 1;
+
+    // Event handlers for debugging
+    isPlayingAudio = true;
+    utterance.onstart = () => console.log('🔊 Speech started:', text);
+    utterance.onend = () => {
+        console.log('✅ Speech ended:', text);
+        isPlayingAudio = false;
+        // Process next in queue
+        setTimeout(() => processAudioQueue(), 300); // Small delay between announcements
+    };
+    utterance.onerror = (event) => {
+        console.error('❌ Speech error:', event);
+        isPlayingAudio = false;
+        processAudioQueue();
+    };
+
+    // Try to use a clear voice
+    const voices = speechSynth.getVoices();
+
+    if (voices.length > 0) {
+        const preferredVoice = voices.find(voice =>
+            voice.lang.startsWith('en') &&
+            (voice.name.includes('Google') || voice.name.includes('Microsoft') || voice.name.includes('Samantha'))
+        ) || voices[0]; // Fallback to first available voice
+
+        if (preferredVoice) {
+            utterance.voice = preferredVoice;
+            console.log('Using voice:', preferredVoice.name);
+        }
+    }
+
+    try {
+        speechSynth.speak(utterance);
+        console.log('✅ Speech synthesis started');
+    } catch (error) {
+        console.error('❌ Error starting speech:', error);
+        isPlayingAudio = false;
+    }
+}
+
+// Check for collision warnings and announce them - CRITICAL for blind safety
+function checkCollisionWarnings(detections) {
+    if (!audioEnabled || detections.length === 0) return;
+
+    const now = Date.now();
+
+    detections.forEach(detection => {
+        const collision = detection.collision;
+        if (!collision || !collision.collision_risk) return;
+
+        const trackId = detection.track_id || detection.class_name;
+        const lastAlert = collisionAlerts.get(trackId) || 0;
+
+        let warningMessage = '';
+        let priority = 'normal';
+        let alertInterval = 3000; // Default 3 seconds
+        const objectName = detection.class_name;
+
+        // Get movement information if available
+        const movement = detection.movement;
+        let movementDesc = '';
+
+        if (movement && movement.direction !== 'stationary') {
+            const directionMap = {
+                'moving_right': 'moving right',
+                'moving_left': 'moving left',
+                'moving_up': 'moving up',
+                'moving_down': 'moving down'
+            };
+
+            const directionText = directionMap[movement.direction] || 'moving';
+            const speedText = movement.speed_class || 'medium speed';
+            movementDesc = ` ${directionText} at ${speedText}`;
+        }
+
+        // Get distance info for better context
+        const imageWidth = canvas ? canvas.width : 640;
+        const imageHeight = canvas ? canvas.height : 480;
+        const distanceInfo = estimateDistance(detection.bbox, objectName, imageWidth, imageHeight);
+
+        // Enhanced warnings with trajectory and movement
+        switch(collision.collision_severity) {
+            case 'high':
+                if (collision.is_approaching) {
+                    warningMessage = `Danger! ${objectName} approaching directly ahead${movementDesc}!`;
+                } else {
+                    warningMessage = `Warning! ${objectName} directly ahead!`;
+                }
+                priority = 'critical'; // Upgraded to critical for immediate threats
+                alertInterval = 1000; // 1 second for CRITICAL threats
+                break;
+            case 'medium':
+                if (collision.is_approaching) {
+                    warningMessage = `Caution! ${objectName} approaching from ${distanceInfo.direction}${movementDesc}`;
+                } else {
+                    warningMessage = `Caution! ${objectName} at ${distanceInfo.direction}`;
+                }
+                priority = 'high';
+                alertInterval = 2000; // 2 seconds for approaching objects
+                break;
+            case 'low':
+                if (collision.is_approaching) {
+                    warningMessage = `${objectName} approaching from distance, ${distanceInfo.direction}`;
+                } else {
+                    warningMessage = `${objectName} nearby at ${distanceInfo.direction}`;
+                }
+                priority = 'normal';
+                alertInterval = 3500; // 3.5 seconds for distant approaching
+                break;
+        }
+
+        // Check if enough time has passed for this specific object
+        if (now - lastAlert < alertInterval) return;
+
+        if (warningMessage) {
+            console.log('🚨 COLLISION WARNING:', warningMessage, `Priority: ${priority}`);
+            speak(warningMessage, priority);
+            collisionAlerts.set(trackId, now);
+        }
+    });
+}
+
+// NEW: Announce tracking-specific events (new tracks, lost tracks, movement changes)
+function announceTrackingEvents(detections) {
+    if (!audioEnabled || !trackingEnabled) return;
+
+    const now = Date.now();
+    const currentTrackIds = new Set();
+
+    // Build current tracked objects map
+    detections.forEach(detection => {
+        if (detection.track_id !== null && detection.track_id !== undefined) {
+            currentTrackIds.add(detection.track_id);
+
+            // Check for new tracks
+            if (!previousTrackedObjects.has(detection.track_id)) {
+                // New object detected
+                const imageWidth = canvas ? canvas.width : 640;
+                const imageHeight = canvas ? canvas.height : 480;
+                const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight);
+
+                const announcement = `New ${detection.class_name} detected at ${distanceInfo.direction}`;
+                console.log('🆕 NEW TRACK:', announcement);
+                queueAnnouncement(announcement, 'high');
+
+                // Track first seen time
+                trackFirstSeen.set(detection.track_id, now);
+            } else {
+                // Check for significant movement changes
+                const prevDetection = previousTrackedObjects.get(detection.track_id);
+                const prevMovement = prevDetection.movement;
+                const currentMovement = detection.movement;
+
+                if (prevMovement && currentMovement) {
+                    // Check if movement changed from stationary to moving
+                    if (prevMovement.direction === 'stationary' && currentMovement.direction !== 'stationary') {
+                        const directionMap = {
+                            'moving_right': 'right',
+                            'moving_left': 'left',
+                            'moving_up': 'upward',
+                            'moving_down': 'downward'
+                        };
+                        const directionText = directionMap[currentMovement.direction] || '';
+                        const announcement = `${detection.class_name} started moving ${directionText}`;
+                        console.log('🏃 MOVEMENT STARTED:', announcement);
+                        queueAnnouncement(announcement, 'normal');
+                        trackLastMovement.set(detection.track_id, currentMovement.direction);
+                    }
+                    // Check if speed increased significantly
+                    else if (prevMovement.speed_class === 'slow' && currentMovement.speed_class === 'fast') {
+                        const announcement = `${detection.class_name} speed increased`;
+                        console.log('⚡ SPEED CHANGE:', announcement);
+                        queueAnnouncement(announcement, 'high');
+                    }
+                    // Check if direction changed significantly
+                    else if (prevMovement.direction !== 'stationary' &&
+                             currentMovement.direction !== 'stationary' &&
+                             prevMovement.direction !== currentMovement.direction) {
+                        const lastAnnouncedDirection = trackLastMovement.get(detection.track_id);
+                        if (lastAnnouncedDirection !== currentMovement.direction) {
+                            const directionMap = {
+                                'moving_right': 'right',
+                                'moving_left': 'left',
+                                'moving_up': 'upward',
+                                'moving_down': 'downward'
+                            };
+                            const directionText = directionMap[currentMovement.direction] || '';
+                            const announcement = `${detection.class_name} changed direction, now moving ${directionText}`;
+                            console.log('🔄 DIRECTION CHANGE:', announcement);
+                            queueAnnouncement(announcement, 'normal');
+                            trackLastMovement.set(detection.track_id, currentMovement.direction);
+                        }
+                    }
+                }
+
+                // Check for objects that have been stationary for a long time
+                const firstSeenTime = trackFirstSeen.get(detection.track_id);
+                if (firstSeenTime && (now - firstSeenTime) > 10000) { // 10 seconds
+                    const movement = detection.movement;
+                    if (movement && movement.direction === 'stationary') {
+                        // Only announce once every 15 seconds
+                        const lastStationary = trackLastMovement.get(`${detection.track_id}_stationary`) || 0;
+                        if (now - lastStationary > 15000) {
+                            const imageWidth = canvas ? canvas.width : 640;
+                            const imageHeight = canvas ? canvas.height : 480;
+                            const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight);
+                            const announcement = `${detection.class_name} stationary at ${distanceInfo.direction}`;
+                            console.log('⏸️ LONG STATIONARY:', announcement);
+                            queueAnnouncement(announcement, 'low');
+                            trackLastMovement.set(`${detection.track_id}_stationary`, now);
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Check for lost tracks (objects that left the scene)
+    previousTrackedObjects.forEach((prevDetection, trackId) => {
+        if (!currentTrackIds.has(trackId)) {
+            // Object left the scene
+            const announcement = `${prevDetection.class_name} has left the area`;
+            console.log('👋 TRACK LOST:', announcement);
+            queueAnnouncement(announcement, 'normal');
+
+            // Clean up tracking data
+            trackFirstSeen.delete(trackId);
+            trackLastMovement.delete(trackId);
+            trackLastMovement.delete(`${trackId}_stationary`);
+        }
+    });
+
+    // Update previous tracked objects for next frame
+    previousTrackedObjects.clear();
+    detections.forEach(detection => {
+        if (detection.track_id !== null && detection.track_id !== undefined) {
+            previousTrackedObjects.set(detection.track_id, {
+                class_name: detection.class_name,
+                movement: detection.movement,
+                bbox: detection.bbox,
+                collision: detection.collision
+            });
+        }
+    });
+}
+
+// ENHANCED: Announce detections with direction information and better control
+function announceDetections(detections) {
+    console.log('Announcing detections:', detections.length, 'objects');
+
+    if (!audioEnabled || detections.length === 0) {
+        console.log('Audio disabled or no detections');
+        return;
+    }
+
+    // 1. Check for tracking events (new/lost tracks, movement changes)
+    announceTrackingEvents(detections);
+
+    // 2. Check for collisions (higher priority)
+    checkCollisionWarnings(detections);
+
+    const now = Date.now();
+    const announcements = [];
+
+    // Group detections by class and find closest of each type
+    const groupedDetections = {};
+    detections.forEach((detection, index) => {
+        console.log(`Detection ${index}:`, detection);
+        const className = detection.class_name;
+
+        // Use actual image dimensions if available
+        const imageWidth = canvas ? canvas.width : 640;
+        const imageHeight = canvas ? canvas.height : 480;
+        const distanceInfo = estimateDistance(detection.bbox, className, imageWidth, imageHeight);
+
+        console.log(`Distance and direction for ${className}:`, distanceInfo);
+
+        if (!groupedDetections[className] ||
+            distanceInfo.ratio > groupedDetections[className].distanceInfo.ratio) {
+            groupedDetections[className] = { ...detection, distanceInfo };
+        }
+    });
+
+    // 3. Create announcements for each object type with direction and movement
+    Object.keys(groupedDetections).forEach(className => {
+        const detection = groupedDetections[className];
+        const lastTime = lastAnnouncement[className] || 0;
+
+        // CRITICAL: Dynamic timing optimized for blind navigation safety
+        let announcementInterval = 8000; // Default 8 seconds for far objects
+        if (detection.distanceInfo.category === 'immediate') {
+            announcementInterval = 2000; // 2 seconds - CRITICAL immediate threats
+        } else if (detection.distanceInfo.category === 'near') {
+            announcementInterval = 4000; // 4 seconds for close objects
+        } else if (detection.distanceInfo.category === 'medium') {
+            announcementInterval = 6000; // 6 seconds for medium distance
+        }
+
+        // Only announce if enough time has passed
+        if (now - lastTime > announcementInterval) {
+            const count = detections.filter(d => d.class_name === className).length;
+            const countText = count > 1 ? `${count} ${className}s` : `${className}`;
+
+            // Build movement description if available
+            let movementDesc = '';
+            const movement = detection.movement;
+            if (movement && movement.direction !== 'stationary') {
+                const directionMap = {
+                    'moving_right': 'moving right',
+                    'moving_left': 'moving left',
+                    'moving_up': 'moving upward',
+                    'moving_down': 'moving downward'
+                };
+                const directionText = directionMap[movement.direction] || 'moving';
+                const speedText = movement.speed_class || 'medium speed';
+                movementDesc = `, ${directionText} at ${speedText}`;
+            }
+
+            // Enhanced announcement with direction and movement
+            const announcement = `${countText} ${detection.distanceInfo.distance} to your ${detection.distanceInfo.direction}${movementDesc}`;
+
+            // Adjust priority based on movement
+            let priority = detection.distanceInfo.category === 'immediate' ? 'high' : 'normal';
+            if (movement && movement.direction !== 'stationary' && detection.distanceInfo.category !== 'far') {
+                priority = 'high'; // Moving objects nearby are higher priority
+            }
+
+            announcements.push({
+                text: announcement,
+                priority: priority,
+                className: className,
+                direction: detection.distanceInfo.direction,
+                isMoving: movement && movement.direction !== 'stationary'
+            });
+
+            lastAnnouncement[className] = now;
+            console.log('Added directional announcement with movement:', announcement);
+        }
+    });
+
+    console.log('Total announcements with direction and movement:', announcements.length);
+
+    // Announce in order of priority (immediate dangers first, then moving objects)
+    announcements.sort((a, b) => {
+        if (a.priority === b.priority) {
+            // If same priority, moving objects first
+            return a.isMoving && !b.isMoving ? -1 : 1;
+        }
+        return a.priority === 'high' ? -1 : 1;
+    });
+
+    // Queue announcements instead of speaking directly (better queue management)
+    if (announcements.length > 0) {
+        // Queue the most important detection
+        const mainAnnouncement = announcements[0];
+        console.log('Queueing directional announcement:', mainAnnouncement.text);
+        queueAnnouncement(mainAnnouncement.text, mainAnnouncement.priority);
+
+        // Queue additional moving objects if any (max 2 more)
+        const additionalMoving = announcements.slice(1).filter(a => a.isMoving).slice(0, 2);
+        additionalMoving.forEach(announcement => {
+            queueAnnouncement(announcement.text, 'low');
+        });
+    } else {
+        console.log('No new announcements to queue');
+    }
+}
+
+// Toggle header visibility
+function toggleHeader() {
+    const details = document.querySelector('.project-details');
+    const toggleText = document.getElementById('toggleText');
+    
+    if (details.style.display === 'none') {
+        details.style.display = 'grid';
+        toggleText.textContent = 'Hide Details';
+        details.style.animation = 'slideInDown 0.5s ease-out';
+    } else {
+        details.style.display = 'none';
+        toggleText.textContent = 'Show Details';
+    }
+}
+
+async function startCamera() {
+    const videoElement = document.getElementById('videoElement');
+    const detectionCanvas = document.getElementById('detectionCanvas');
+    const startBtn = document.getElementById('startBtn');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const startBtnText = document.getElementById('startBtnText');
+    const cameraContainer = document.getElementById('cameraContainer');
+    const realtimeIndicator = document.getElementById('realtimeIndicator');
+
+    try {
+        if (stream) {
+            // Stop camera and detection
+            stopDetection();
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+            videoElement.srcObject = null;
+            videoElement.style.display = 'none';
+            detectionCanvas.style.display = 'none';
+            
+            startBtnText.innerHTML = 'Start Camera & Detection';
+            statusDot.classList.remove('active', 'detecting');
+            statusText.textContent = 'Camera Disconnected';
+            
+            // Hide real-time indicator
+            realtimeIndicator.classList.remove('active');
+            cameraContainer.classList.remove('recording');
+            
+            return;
+        }
+
+        startBtnText.innerHTML = '<div class="loading"></div>Starting Camera...';
+        
+        // Initialize TRUE gyroscope tracking if not done yet
+        if (!gyroscopePermissionGranted) {
+            console.log('Initializing TRUE gyroscope tracking...');
+            await initializeOrientation();
+        }
+        
+        // Request camera access
+        const constraints = {
+            video: { 
+                width: { ideal: 640 },
+                height: { ideal: 480 },
+                frameRate: { ideal: 30 },
+                facingMode: 'environment' // Use back camera on mobile
+            }
+        };
+        
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+        videoElement.srcObject = stream;
+        
+        // Wait for video to be ready
+        await new Promise((resolve) => {
+            videoElement.onloadedmetadata = () => {
+                videoElement.play();
+                resolve();
+            };
+        });
+        
+        // Setup canvas for detection overlay
+        video = videoElement;
+        canvas = detectionCanvas;
+        ctx = canvas.getContext('2d');
+        
+        // Set canvas size to match video
+        canvas.width = videoElement.videoWidth || 640;
+        canvas.height = videoElement.videoHeight || 480;
+        
+        // Show video and canvas
+        videoElement.style.display = 'block';
+        detectionCanvas.style.display = 'block';
+        
+        // Update status to detecting
+        statusDot.classList.add('detecting');
+        const gyroStatus = gyroscopePermissionGranted ? 
+            (gyroscopeData.calibrated ? 'with TRUE Gyroscope Correction' : 'with TRUE Gyroscope (needs calibration)') 
+            : '';
+        statusText.textContent = `Camera Connected - Real-time Detection Active ${gyroStatus}`;
+        
+        // Show real-time indicator
+        realtimeIndicator.classList.add('active');
+        cameraContainer.classList.add('recording');
+        
+        // Start detection automatically
+        detectionActive = true;
+        startTime = Date.now();
+        frameCount = 0;
+        startRealtimeAnalysis();
+        
+        // Update button text
+        startBtnText.innerHTML = 'Stop Camera & Detection';
+        
+    } catch (err) {
+        console.error('Error accessing camera:', err);
+        alert('Error accessing camera. Please ensure camera permissions are granted and camera is not in use by another application.');
+        startBtnText.innerHTML = 'Start Camera & Detection';
+    }
+}
+
+function stopDetection() {
+    const videoElement = document.getElementById('videoElement');
+    const detectionCanvas = document.getElementById('detectionCanvas');
+    const cameraContainer = document.getElementById('cameraContainer');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const realtimeIndicator = document.getElementById('realtimeIndicator');
+
+    console.log('🛑 Stopping detection and cancelling pending requests...');
+
+    detectionActive = false;
+    isProcessingRequest = false;
+
+    // Cancel any pending fetch requests
+    if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+        console.log('✅ Aborted pending request');
+    }
+
+    // Clear canvas
+    if (canvas && ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Clear tracking data
+    previousTrackedObjects.clear();
+    trackFirstSeen.clear();
+    trackLastMovement.clear();
+    collisionAlerts.clear();
+    audioQueue = [];
+    isPlayingAudio = false;
+    console.log('✅ Cleared tracking data and audio queue');
+
+    // Update status
+    statusDot.classList.remove('detecting');
+    statusText.textContent = 'Detection Stopped';
+
+    // Hide real-time indicator
+    realtimeIndicator.classList.remove('active');
+    cameraContainer.classList.remove('recording');
+
+    if (detectionInterval) {
+        clearInterval(detectionInterval);
+        detectionInterval = null;
+    }
+
+    // Stop any ongoing speech
+    if (speechSynth) {
+        speechSynth.cancel();
+    }
+}
+
+// UPDATED: Start real-time analysis with gyroscope-based rotation
+function startRealtimeAnalysis() {
+    // Clear any existing interval
+    if (detectionInterval) {
+        clearInterval(detectionInterval);
+    }
+    
+    console.log('🚀 Starting real-time analysis with TRUE gyroscope-based rotation...');
+
+    // REAL-TIME for blind navigation: 800ms for immediate hazard detection
+    detectionInterval = setInterval(async () => {
+        if (!detectionActive || !video || !canvas || !ctx) {
+            console.log('❌ Detection inactive or missing elements');
+            return;
+        }
+
+        // Skip if already processing a request
+        if (isProcessingRequest) {
+            console.log('⏭️ Skipping frame - previous request still processing');
+            return;
+        }
+
+        try {
+            isProcessingRequest = true;
+
+            // Create new abort controller for this request
+            currentAbortController = new AbortController();
+            // Capture frame from video
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = video.videoWidth || 640;
+            tempCanvas.height = video.videoHeight || 480;
+            
+            // Draw current video frame
+            tempCtx.drawImage(video, 0, 0);
+            const imageData = tempCanvas.toDataURL('image/jpeg', 0.8);
+            
+            // Get current TRUE gyroscope-based orientation data
+            const currentOrientation = getCurrentOrientation();
+            
+            console.log('📤 Sending detection request:', {
+                imageSize: `${tempCanvas.width}x${tempCanvas.height}`,
+                trueGyroscopeIncluded: !!currentOrientation,
+                gyroscopeData: currentOrientation ? {
+                    rotation: currentOrientation.gyroscope_rotation,
+                    calibrated: currentOrientation.calibrated,
+                    source: currentOrientation.source,
+                    angularVelocityZ: currentOrientation.angular_velocity_z?.toFixed(4)
+                } : null
+            });
+            
+            // Prepare request payload
+            const requestData = {
+                image: imageData,
+                tracking_enabled: trackingEnabled
+            };
+
+            // Add TRUE gyroscope-based orientation data if available
+            if (currentOrientation) {
+                requestData.orientation = currentOrientation;
+                console.log('✅ Including TRUE gyroscope data in request:', {
+                    rotation: currentOrientation.gyroscope_rotation,
+                    calibrated: currentOrientation.calibrated,
+                    angular_velocity_z: currentOrientation.angular_velocity_z?.toFixed(4),
+                    integrated_rotation_z: currentOrientation.integrated_rotation_z?.toFixed(4)
+                });
+            } else {
+                console.warn('⚠️ No TRUE gyroscope data available - sending without rotation correction');
+            }
+            
+            // Send to server for detection with abort signal and timeout
+            const timeoutId = setTimeout(() => {
+                console.error('⏱️ Request timeout after 10 seconds');
+                if (currentAbortController) {
+                    currentAbortController.abort();
+                }
+            }, 10000); // 10 second timeout (CPU is slower)
+
+            console.log('📡 Sending request to /detect_image...');
+            const response = await fetch('/detect_image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestData),
+                signal: currentAbortController.signal
+            });
+
+            clearTimeout(timeoutId); // Clear timeout if request completes
+            console.log('📡 Response received, status:', response.status);
+            console.log('📡 Response headers:', [...response.headers.entries()]);
+            console.log('📡 Response OK:', response.ok);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error('❌ HTTP error response body:', errorText);
+                throw new Error(`HTTP error! status: ${response.status}, body: ${errorText.substring(0, 200)}`);
+            }
+
+            console.log('📡 Parsing JSON response...');
+            const data = await response.json();
+            console.log('📦 JSON parsed successfully:', data);
+
+            // Check if detection is still active before processing response
+            if (!detectionActive) {
+                console.log('🛑 Detection stopped - ignoring response');
+                isProcessingRequest = false;
+                return;
+            }
+
+            if (data.success) {
+                console.log('✅ Detection successful:', {
+                    detections: data.detections.length,
+                    rotationApplied: data.rotation_applied,
+                    orientationSource: data.orientation_source,
+                    trueGyroscopeAvailable: data.gyroscope_available,
+                    collisionWarnings: data.collision_warnings || 0
+                });
+
+                // Log TRUE gyroscope rotation correction info
+                if (data.orientation_corrected) {
+                    console.log(`🎯 Applied ${data.rotation_applied}° TRUE gyroscope-based rotation correction`);
+                } else {
+                    console.log('➡️ No TRUE gyroscope rotation correction applied');
+                }
+
+                // Store detections for pathfinding
+                window.lastDetections = data.detections;
+
+                drawDetections(data.detections);
+                updateRealtimeDetections(data.detections);
+                updateStats(data.detections);
+                announceDetections(data.detections);
+
+                // Recalculate path if pathfinding is enabled and goal is set
+                if (pathfindingEnabled && navigationGoal) {
+                    calculateNavigationPath();
+                }
+                
+                frameCount++;
+                console.log('📊 Frame count:', frameCount);
+                
+                updateRealtimeStats();
+            } else {
+                console.error('❌ Detection failed:', data.error);
+            }
+        } catch (error) {
+            // Don't log abort errors - they're expected when stopping
+            if (error.name === 'AbortError') {
+                console.log('✅ Request cancelled successfully');
+            } else {
+                console.error('❌ Real-time detection error:', error);
+                console.error('Error details:', {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                });
+            }
+        } finally {
+            isProcessingRequest = false;
+            currentAbortController = null;
+            console.log('🔓 Request processing unlocked');
+        }
+    }, 1000); // 800ms - Real-time hazard detection for blind navigation
+    
+    // Update FPS counter every 2 seconds
+    const fpsInterval = setInterval(() => {
+        if (!detectionActive) {
+            console.log('⏹️ Stopping FPS interval');
+            clearInterval(fpsInterval);
+            return;
+        }
+        console.log('📈 Updating FPS from interval');
+        updateFPS();
+    }, 2000);
+}
+
+// Helper function to generate consistent colors for track IDs
+function getTrackColor(trackId) {
+    if (!trackColors[trackId]) {
+        const hue = (trackId * 137.5) % 360; // Golden angle for color distribution
+        trackColors[trackId] = `hsl(${hue}, 70%, 50%)`;
+    }
+    return trackColors[trackId];
+}
+
+// ENHANCED: Draw detection boxes with tracking and direction labels
+function drawDetections(detections) {
+    if (!canvas || !ctx) return;
+
+    // Clear previous drawings
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (detections.length === 0) return;
+
+    detections.forEach(detection => {
+        const [x1, y1, x2, y2] = detection.bbox;
+        const width = x2 - x1;
+        const height = y2 - y1;
+
+        // Update tracked objects map
+        if (detection.track_id !== null && detection.track_id !== undefined) {
+            trackedObjects.set(detection.track_id, {
+                class_name: detection.class_name,
+                lastSeen: Date.now(),
+                trajectory: detection.trajectory || []
+            });
+        }
+        
+        // Get distance and direction info
+        const distanceInfo = estimateDistance(detection.bbox, detection.class_name, 
+                                            video.videoWidth || 640, video.videoHeight || 480);
+        
+        // Scale coordinates to canvas size
+        const scaleX = canvas.width / (video.videoWidth || 640);
+        const scaleY = canvas.height / (video.videoHeight || 480);
+        
+        const scaledX = x1 * scaleX;
+        const scaledY = y1 * scaleY;
+        const scaledWidth = width * scaleX;
+        const scaledHeight = height * scaleY;
+        
+        // Color code based on tracking or distance
+        let boxColor, fillColor;
+
+        // Use consistent color for tracked objects
+        if (trackingEnabled && detection.track_id !== null && detection.track_id !== undefined) {
+            const trackColor = getTrackColor(detection.track_id);
+            boxColor = trackColor;
+            fillColor = trackColor.replace('hsl', 'hsla').replace(')', ', 0.2)');
+        } else {
+            // Fallback to distance-based coloring
+            switch(distanceInfo.category) {
+                case 'immediate':
+                    boxColor = '#ff0000'; // Red for very close
+                    fillColor = 'rgba(255, 0, 0, 0.2)';
+                    break;
+                case 'near':
+                    boxColor = '#ff8800'; // Orange for close
+                    fillColor = 'rgba(255, 136, 0, 0.2)';
+                    break;
+                case 'medium':
+                    boxColor = '#ffff00'; // Yellow for medium
+                    fillColor = 'rgba(255, 255, 0, 0.2)';
+                    break;
+                case 'far':
+                    boxColor = '#00ff00'; // Green for far
+                    fillColor = 'rgba(0, 255, 0, 0.2)';
+                    break;
+                default:
+                    boxColor = '#0088ff'; // Blue for very far
+                    fillColor = 'rgba(0, 136, 255, 0.2)';
+            }
+        }
+        
+        // Set drawing style
+        ctx.strokeStyle = boxColor;
+        ctx.lineWidth = distanceInfo.category === 'immediate' ? 4 : 2;
+        ctx.fillStyle = fillColor;
+        ctx.font = '14px Arial';
+        
+        // Draw bounding box
+        ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
+        ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
+        
+        // Enhanced labels with direction and tracking
+        const confidence = (detection.confidence * 100).toFixed(1);
+        const trackLabel = detection.track_id !== null ? `ID: ${detection.track_id}` : '';
+        const label = `${detection.class_name} ${confidence}%`;
+        const distanceLabel = `${distanceInfo.distance}`;
+        const directionLabel = `Direction: ${distanceInfo.direction}`;
+
+        // Add movement info if available
+        let movementLabel = '';
+        if (detection.movement && detection.movement.direction !== 'stationary') {
+            const directionIcon = {
+                'moving_right': '→',
+                'moving_left': '←',
+                'moving_up': '↑',
+                'moving_down': '↓'
+            }[detection.movement.direction] || '↔';
+
+            movementLabel = `${directionIcon} ${detection.movement.speed_class}`;
+        }
+
+        // Calculate label background size
+        ctx.font = 'bold 14px Arial';
+        const labelWidth = Math.max(
+            ctx.measureText(label).width,
+            ctx.measureText(distanceLabel).width,
+            ctx.measureText(directionLabel).width,
+            trackLabel ? ctx.measureText(trackLabel).width : 0,
+            movementLabel ? ctx.measureText(movementLabel).width : 0
+        ) + 10;
+
+        const labelHeight = trackLabel && movementLabel ? 85 : trackLabel || movementLabel ? 75 : 65;
+
+        // Draw label background
+        ctx.fillStyle = boxColor;
+        ctx.fillRect(scaledX, scaledY - labelHeight, labelWidth, labelHeight);
+
+        // Draw labels text
+        ctx.fillStyle = 'white';
+        let yOffset = -labelHeight + 15;
+
+        // Track ID (if available)
+        if (trackLabel) {
+            ctx.font = 'bold 12px Arial';
+            ctx.fillText(trackLabel, scaledX + 5, scaledY + yOffset);
+            yOffset += 18;
+        }
+
+        // Class name and confidence
+        ctx.font = 'bold 14px Arial';
+        ctx.fillText(label, scaledX + 5, scaledY + yOffset);
+        yOffset += 18;
+
+        // Distance
+        ctx.font = '12px Arial';
+        ctx.fillText(distanceLabel, scaledX + 5, scaledY + yOffset);
+        yOffset += 16;
+
+        // Direction
+        ctx.fillText(directionLabel, scaledX + 5, scaledY + yOffset);
+
+        // Movement (if available)
+        if (movementLabel) {
+            yOffset += 16;
+            ctx.fillText(movementLabel, scaledX + 5, scaledY + yOffset);
+        }
+
+        // Draw trajectory if tracking is enabled and trajectory exists
+        if (trackingEnabled && detection.trajectory && detection.trajectory.length > 1) {
+            ctx.strokeStyle = boxColor;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            detection.trajectory.forEach((point, idx) => {
+                const trajX = point[0] * scaleX;
+                const trajY = point[1] * scaleY;
+
+                if (idx === 0) {
+                    ctx.moveTo(trajX, trajY);
+                } else {
+                    ctx.lineTo(trajX, trajY);
+                }
+            });
+
+            ctx.stroke();
+
+            // Draw trajectory points
+            detection.trajectory.forEach(point => {
+                const trajX = point[0] * scaleX;
+                const trajY = point[1] * scaleY;
+                ctx.fillStyle = boxColor;
+                ctx.beginPath();
+                ctx.arc(trajX, trajY, 3, 0, 2 * Math.PI);
+                ctx.fill();
+            });
+        }
+
+        // Draw collision warning if present
+        if (detection.collision && detection.collision.collision_risk) {
+            const centerX = (scaledX + scaledWidth / 2);
+            const centerY = (scaledY + scaledHeight / 2);
+
+            // Draw warning icon based on severity
+            let warningColor;
+            switch(detection.collision.collision_severity) {
+                case 'high':
+                    warningColor = '#ff0000';
+                    break;
+                case 'medium':
+                    warningColor = '#ff8800';
+                    break;
+                default:
+                    warningColor = '#ffff00';
+            }
+
+            // Pulsing warning circle
+            const pulseSize = 30 + Math.sin(Date.now() / 200) * 5;
+            ctx.strokeStyle = warningColor;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, pulseSize, 0, 2 * Math.PI);
+            ctx.stroke();
+
+            // Warning triangle
+            ctx.fillStyle = warningColor;
+            ctx.font = 'bold 24px Arial';
+            ctx.fillText('⚠', centerX - 12, centerY + 8);
+
+            // Draw predicted position if available
+            if (detection.collision.predicted_position) {
+                const predX = detection.collision.predicted_position[0] * scaleX;
+                const predY = detection.collision.predicted_position[1] * scaleY;
+
+                // Draw line from current to predicted position
+                ctx.strokeStyle = warningColor;
+                ctx.lineWidth = 2;
+                ctx.setLineDash([5, 5]);
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY);
+                ctx.lineTo(predX, predY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Draw predicted position marker
+                ctx.fillStyle = warningColor;
+                ctx.beginPath();
+                ctx.arc(predX, predY, 8, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+        }
+    });
+
+    // Draw navigation path if available
+    if (navigationPath && navigationPath.length > 1) {
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 4;
+        ctx.setLineDash([10, 5]);
+        ctx.beginPath();
+
+        navigationPath.forEach((point, idx) => {
+            const pathX = point[0] * scaleX;
+            const pathY = point[1] * scaleY;
+
+            if (idx === 0) {
+                ctx.moveTo(pathX, pathY);
+            } else {
+                ctx.lineTo(pathX, pathY);
+            }
+        });
+
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Draw waypoint markers
+        navigationPath.forEach((point, idx) => {
+            const pathX = point[0] * scaleX;
+            const pathY = point[1] * scaleY;
+
+            ctx.fillStyle = '#00ff00';
+            ctx.beginPath();
+            ctx.arc(pathX, pathY, 5, 0, 2 * Math.PI);
+            ctx.fill();
+
+            // Draw waypoint number
+            if (idx > 0 && idx < navigationPath.length - 1) {
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 12px Arial';
+                ctx.fillText(idx.toString(), pathX + 8, pathY + 4);
+            }
+        });
+
+        // Draw goal marker
+        if (navigationGoal) {
+            const goalX = navigationGoal[0] * scaleX;
+            const goalY = navigationGoal[1] * scaleY;
+
+            ctx.fillStyle = '#00ff00';
+            ctx.font = 'bold 30px Arial';
+            ctx.fillText('🎯', goalX - 15, goalY + 10);
+        }
+    }
+
+    // Draw user position (center bottom)
+    const userX = canvas.width / 2;
+    const userY = canvas.height - 20;
+    ctx.fillStyle = '#0088ff';
+    ctx.font = 'bold 30px Arial';
+    ctx.fillText('📍', userX - 15, userY);
+}
+
+// ENHANCED: Update detections display with gyroscope information
+function updateRealtimeDetections(detections) {
+    const resultsContainer = document.getElementById('detectionResults');
+    
+    // Clear previous results with fade effect
+    resultsContainer.style.opacity = '0.5';
+    
+    setTimeout(() => {
+        resultsContainer.innerHTML = '';
+        
+        if (detections.length === 0) {
+            resultsContainer.innerHTML = `
+                <div style="text-align: center; padding: 20px;">
+                    <div style="font-size: 3rem; margin-bottom: 10px;">🔍</div>
+                    <p style="color: var(--text-secondary); font-style: italic;">
+                        No objects detected
+                    </p>
+                </div>
+            `;
+        } else {
+            // Group detections by class name
+            const groupedDetections = {};
+            detections.forEach(detection => {
+                const className = detection.class_name;
+                if (!groupedDetections[className]) {
+                    groupedDetections[className] = [];
+                }
+                groupedDetections[className].push(detection);
+            });
+
+            // Create enhanced list with direction and gyroscope info
+            Object.keys(groupedDetections).forEach((className, index) => {
+                const detectionList = groupedDetections[className];
+                const count = detectionList.length;
+                const avgConfidence = detectionList.reduce((sum, det) => sum + det.confidence, 0) / count;
+                
+                // Get direction for the closest object of this type
+                const closestDetection = detectionList.reduce((closest, current) => {
+                    const currentArea = (current.bbox[2] - current.bbox[0]) * (current.bbox[3] - current.bbox[1]);
+                    const closestArea = (closest.bbox[2] - closest.bbox[0]) * (closest.bbox[3] - closest.bbox[1]);
+                    return currentArea > closestArea ? current : closest;
+                });
+                
+                const imageWidth = canvas ? canvas.width : 640;
+                const imageHeight = canvas ? canvas.height : 480;
+                const distanceInfo = estimateDistance(closestDetection.bbox, className, imageWidth, imageHeight);
+                
+                const item = document.createElement('div');
+                item.className = 'detection-item';
+                item.style.animationDelay = `${index * 0.1}s`;
+                
+                // Add confidence color coding
+                let confidenceColor = '#ef4444'; // red for low confidence
+                if (avgConfidence > 0.7) confidenceColor = '#10b981'; // green for high
+                else if (avgConfidence > 0.5) confidenceColor = '#f59e0b'; // yellow for medium
+                
+                // Get current gyroscope status
+                const gyroData = getCurrentOrientation();
+                const gyroStatus = gyroData ? 
+                    (gyroData.calibrated ? 
+                        `🎯 TRUE Gyro: ${gyroData.gyroscope_rotation.toFixed(1)}° (${gyroData.angular_velocity_z.toFixed(3)} rad/s)` : 
+                        '⚙️ TRUE Gyro: Not Calibrated'
+                    ) : 
+                    '❌ TRUE Gyro: Disabled';
+                
+                item.innerHTML = `
+                    <div class="detection-class">
+                        ${count}x ${className}
+                    </div>
+                    <div class="detection-confidence" style="color: ${confidenceColor}">
+                        Avg: ${(avgConfidence * 100).toFixed(1)}%
+                        <span style="margin-left: 10px; font-size: 0.8em;">
+                            ${avgConfidence > 0.8 ? '🎯' : avgConfidence > 0.6 ? '✨' : '⚡'}
+                        </span>
+                    </div>
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px;">
+                        Distance: ${distanceInfo.distance}
+                    </div>
+                    <div style="color: #4CAF50; font-size: 0.85rem; margin-top: 4px; font-weight: 600;">
+                        📍 Direction: ${distanceInfo.direction}
+                    </div>
+                    <div style="color: #2196F3; font-size: 0.75rem; margin-top: 4px;">
+                        ${gyroStatus}
+                    </div>
+                `;
+                
+                resultsContainer.appendChild(item);
+            });
+        }
+        
+        resultsContainer.style.opacity = '1';
+    }, 200);
+}
+
+// Set navigation goal by clicking on canvas
+function setNavigationGoal(event) {
+    if (!pathfindingEnabled || !canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = (video.videoWidth || 640) / canvas.width;
+    const scaleY = (video.videoHeight || 480) / canvas.height;
+
+    const clickX = (event.clientX - rect.left) * scaleX;
+    const clickY = (event.clientY - rect.top) * scaleY;
+
+    navigationGoal = [clickX, clickY];
+
+    console.log('Navigation goal set:', navigationGoal);
+    speak('Navigation goal set');
+
+    // Calculate path if we have detections
+    if (detectionActive) {
+        calculateNavigationPath();
+    }
+}
+
+// Calculate navigation path to goal
+async function calculateNavigationPath() {
+    if (!navigationGoal) {
+        console.log('No navigation goal set');
+        return;
+    }
+
+    try {
+        // Get current detections (we'll need to store these)
+        if (!window.lastDetections || window.lastDetections.length === 0) {
+            console.log('No detections available for pathfinding');
+            navigationPath = [[canvas.width / 2, canvas.height - 20], navigationGoal];
+            return;
+        }
+
+        const response = await fetch('/calculate_path', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                detections: window.lastDetections,
+                goal: navigationGoal,
+                image_width: video.videoWidth || 640,
+                image_height: video.videoHeight || 480,
+                grid_size: 20
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.path_found) {
+            navigationPath = data.path;
+            console.log(`Path calculated: ${data.waypoint_count} waypoints, safety: ${data.safety_score.toFixed(2)}`);
+
+            const safetyMessage = data.safety_score > 0.7 ? 'safe path' :
+                                  data.safety_score > 0.4 ? 'caution advised' :
+                                  'risky path';
+            speak(`Path found with ${data.waypoint_count} waypoints. ${safetyMessage}`);
+        } else {
+            console.warn('No path found');
+            navigationPath = null;
+            speak('No clear path to destination');
+        }
+    } catch (error) {
+        console.error('Pathfinding error:', error);
+        speak('Error calculating path');
+    }
+}
+
+// Toggle pathfinding mode
+function togglePathfinding() {
+    pathfindingEnabled = !pathfindingEnabled;
+    const pathfindingBtn = document.getElementById('pathfindingBtn');
+
+    if (pathfindingEnabled) {
+        speak('Pathfinding mode enabled. Click on the video to set a destination');
+        console.log('Pathfinding enabled - click on canvas to set goal');
+        if (pathfindingBtn) {
+            pathfindingBtn.innerHTML = '🗺️ Disable Pathfinding';
+            pathfindingBtn.classList.add('active');
+        }
+    } else {
+        navigationPath = null;
+        navigationGoal = null;
+        speak('Pathfinding mode disabled');
+        console.log('Pathfinding disabled');
+        if (pathfindingBtn) {
+            pathfindingBtn.innerHTML = '🗺️ Enable Pathfinding';
+            pathfindingBtn.classList.remove('active');
+        }
+    }
+}
+
+// Initialize app
+document.addEventListener('DOMContentLoaded', function() {
+    // Add some initial stats
+    document.getElementById('objectCount').textContent = '0';
+    document.getElementById('fpsCounter').textContent = '0';
+    document.getElementById('confidenceAvg').textContent = '0%';
+
+    // Add click handler for canvas to set navigation goals
+    const detectionCanvas = document.getElementById('detectionCanvas');
+    if (detectionCanvas) {
+        detectionCanvas.addEventListener('click', setNavigationGoal);
+        console.log('Canvas click handler added for pathfinding');
+    }
+    
+    // Initialize TRUE gyroscope tracking on page load
+    console.log('Page loaded, initializing TRUE gyroscope...');
+    initializeOrientation().then(success => {
+        if (success) {
+            console.log('✅ TRUE Gyroscope tracking initialized automatically');
+        } else {
+            console.log('❌ TRUE Gyroscope tracking not available - manual activation may be needed');
+        }
+    });
+    
+    // Add smooth scrolling for mobile
+    document.documentElement.style.scrollBehavior = 'smooth';
+    
+    // Optimize for mobile performance
+    if (/Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+        // Reduce particle count for mobile
+        const particles = document.querySelectorAll('.particle');
+        particles.forEach((particle, index) => {
+            if (index > 4) particle.style.display = 'none';
+        });
+        
+        // Show TRUE gyroscope status on mobile
+        setTimeout(() => {
+            if (!gyroscopePermissionGranted) {
+                console.log('Mobile detected - offering TRUE gyroscope permission');
+                const shouldRequest = confirm('📱 Enable TRUE gyroscope sensor for precise phone rotation correction in object detection?\n\nThis uses actual gyroscope angular velocity data for maximum accuracy.');
+                if (shouldRequest) {
+                    requestOrientationPermission();
+                }
+            }
+        }, 2000);
+    }
+});
+
+// Handle visibility change to pause detection when tab is not active
+document.addEventListener('visibilitychange', function() {
+    if (document.hidden && detectionActive) {
+        // Pause detection when tab is hidden
+        if (detectionInterval) {
+            clearInterval(detectionInterval);
+            detectionInterval = null;
+        }
+    } else if (!document.hidden && detectionActive) {
+        // Resume detection when tab becomes visible
+        startRealtimeAnalysis();
+    }
+});
+
+// Enhanced error handling
+window.addEventListener('error', function(e) {
+    console.error('Global error:', e.error);
+});
+
+window.addEventListener('unhandledrejection', function(e) {
+    console.error('Unhandled promise rejection:', e.reason);
+});
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', function() {
+    if (detectionInterval) {
+        clearInterval(detectionInterval);
+    }
+});
+
+// Auto-hide project details on mobile after 3 seconds
+if (window.innerWidth <= 768) {
+    setTimeout(() => {
+        const details = document.querySelector('.project-details');
+        const toggleText = document.getElementById('toggleText');
+        if (details && toggleText) {
+            details.style.display = 'none';
+            toggleText.textContent = 'Show Details';
+        }
+    }, 3000);
+}
+
+// UPDATED: Add TRUE gyroscope status indicator to the page
+function addOrientationStatusIndicator() {
+    const statusContainer = document.querySelector('.stats-container') || document.body;
+    
+    const orientationStatus = document.createElement('div');
+    orientationStatus.id = 'orientationStatus';
+    orientationStatus.style.cssText = `
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.1);
+        border-radius: 8px;
+        font-size: 0.85rem;
+        margin-top: 10px;
+    `;
+    
+    function updateOrientationStatus() {
+        const isActive = gyroscopePermissionGranted;
+        const currentOrientation = getCurrentOrientation();
+        
+        orientationStatus.innerHTML = `
+            <span style="font-size: 1.2em;">${isActive ? '🎯' : '⚠️'}</span>
+            <span>
+                TRUE Gyroscope: ${isActive ? 'Active' : 'Disabled'}
+                ${currentOrientation && currentOrientation.calibrated ? 
+                    ` (${currentOrientation.gyroscope_rotation.toFixed(1)}°, ${currentOrientation.angular_velocity_z.toFixed(3)} rad/s)` : 
+                    (currentOrientation ? ' (Not Calibrated)' : '')}
+            </span>
+            ${!isActive ? 
+                '<button onclick="requestOrientationPermission()" style="margin-left: 8px; padding: 4px 8px; border: none; border-radius: 4px; background: #2196F3; color: white; cursor: pointer;">Enable</button>' : 
+                (!currentOrientation || !currentOrientation.calibrated ? 
+                    '<button onclick="calibrateGyroscope()" style="margin-left: 8px; padding: 4px 8px; border: none; border-radius: 4px; background: #FF9800; color: white; cursor: pointer;">Calibrate</button>' : 
+                    '')}
+        `;
+    }
+    
+    updateOrientationStatus();
+    statusContainer.appendChild(orientationStatus);
+    
+    // Update status every 3 seconds
+    setInterval(updateOrientationStatus, 3000);
+}
+
+// Add the status indicator when page loads
+document.addEventListener('DOMContentLoaded', function() {
+    setTimeout(addOrientationStatusIndicator, 1000);
+});
+
+// UPDATED: Debug function to show current TRUE gyroscope data
+function showOrientationDebug() {
+    const current = getCurrentOrientation();
+    const debugInfo = `
+🎯 TRUE GYROSCOPE Debug Info:
+📱 Permission Granted: ${gyroscopePermissionGranted}
+📐 Calibrated: ${current ? current.calibrated : 'N/A'}
+🔄 Calculated Rotation: ${current ? current.gyroscope_rotation.toFixed(1) + '°' : 'N/A'}
+
+RAW GYROSCOPE DATA:
+🌀 Angular Velocity X: ${current ? current.angular_velocity_x.toFixed(4) + ' rad/s' : 'N/A'}
+🌀 Angular Velocity Y: ${current ? current.angular_velocity_y.toFixed(4) + ' rad/s' : 'N/A'}
+🌀 Angular Velocity Z: ${current ? current.angular_velocity_z.toFixed(4) + ' rad/s' : 'N/A'}
+
+INTEGRATED ROTATIONS:
+📐 Integrated X: ${current ? current.integrated_rotation_x.toFixed(4) + ' rad' : 'N/A'}
+📐 Integrated Y: ${current ? current.integrated_rotation_y.toFixed(4) + ' rad' : 'N/A'}
+📐 Integrated Z: ${current ? current.integrated_rotation_z.toFixed(4) + ' rad' : 'N/A'}
+📐 Baseline Z: ${current ? current.baseline_rotation_z.toFixed(4) + ' rad' : 'N/A'}
+
+⏰ Last Update: ${current ? new Date(current.timestamp).toLocaleTimeString() : 'Never'}
+📊 Data Age: ${current ? ((Date.now() - current.timestamp) / 1000).toFixed(1) + 's' : 'N/A'}
+    `;
+    
+    console.log(debugInfo);
+    alert(debugInfo);
+}
+
+// UPDATED: Test TRUE gyroscope with server
+async function testGyroscope() {
+    console.log('Testing TRUE gyroscope integration...');
+    
+    if (!gyroscopePermissionGranted) {
+        alert('⚠️ TRUE Gyroscope permission not granted. Please enable it first.');
+        return;
+    }
+    
+    const current = getCurrentOrientation();
+    if (!current) {
+        alert('❌ No TRUE gyroscope data available');
+        return;
+    }
+    
+    if (!current.calibrated) {
+        alert('⚠️ TRUE Gyroscope not calibrated. Please calibrate first for accurate testing.');
+        return;
+    }
+    
+    try {
+        // Create a test image (1x1 pixel)
+        const testCanvas = document.createElement('canvas');
+        testCanvas.width = 1;
+        testCanvas.height = 1;
+        const testCtx = testCanvas.getContext('2d');
+        testCtx.fillStyle = 'red';
+        testCtx.fillRect(0, 0, 1, 1);
+        const testImage = testCanvas.toDataURL('image/jpeg');
+        
+        console.log('Sending test request with TRUE gyroscope data:', current);
+        
+        const response = await fetch('/detect_image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                image: testImage,
+                orientation: current
+            })
+        });
+        
+        const data = await response.json();
+        console.log('TRUE Gyroscope test response:', data);
+        
+        if (data.success) {
+            const message = `✅ TRUE Gyroscope Test Successful!
+🎯 Calculated Rotation: ${current.gyroscope_rotation.toFixed(1)}°
+🔧 Rotation Applied: ${data.rotation_applied}°
+📡 Data Source: ${data.orientation_source || 'true_gyroscope'}
+${data.orientation_corrected ? '✅ Correction Applied' : '➡️ No Correction Needed'}
+📐 Calibration Status: ${current.calibrated ? 'Calibrated' : 'Not Calibrated'}
+🌀 Angular Velocity Z: ${current.angular_velocity_z.toFixed(4)} rad/s
+📐 Integrated Z Rotation: ${current.integrated_rotation_z.toFixed(4)} rad`;
+            
+            alert(message);
+            speak(`TRUE gyroscope test successful. ${data.rotation_applied} degree rotation applied based on direct gyroscope sensor data.`);
+        } else {
+            alert('❌ Test failed: ' + data.error);
+        }
+        
+    } catch (error) {
+        console.error('TRUE Gyroscope test error:', error);
+        alert('❌ Test error: ' + error.message);
+    }
+}

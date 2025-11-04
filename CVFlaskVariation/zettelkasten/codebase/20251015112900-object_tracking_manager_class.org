@@ -1,0 +1,113 @@
+:PROPERTIES:
+:ID:       20251015112900-object_tracking_manager_class
+:ROAM_REFS: [[file:../app/services/object_tracker.py::class ObjectTrackingManager]]
+:END:
+#+title: ObjectTrackingManager Class
+#+filetags: :class:tracking:deepsort:session:
+
+* Class Definition
+
+#+begin_src python
+class ObjectTrackingManager:
+    """Manages DeepSORT trackers for multiple sessions."""
+
+    def __init__(self):
+        self.trackers = {}  # session_id -> DeepSort
+        self.track_histories = defaultdict(lambda: deque(maxlen=30))
+#+end_src
+
+Location: app/services/object_tracker.py:21
+
+* Description
+
+Manages per-session DeepSORT trackers and maintains trajectory histories.
+Singleton pattern ensures single manager across all sessions.
+
+* Attributes
+
+- trackers :: dict[str, DeepSort] - Session ID to tracker mapping
+- track_histories :: defaultdict[deque] - Position histories per track
+
+* Methods
+
+All methods documented as separate notes:
+- [[id:20251015115100-get_tracker][get_tracker()]] - Get/create tracker for session
+- [[id:20251015112500-update_tracks][update_tracks()]] - Update tracks with detections
+- [[id:20251015115200-get_track_history][get_track_history()]] - Get trajectory
+- [[id:20251015115300-reset_session][reset_session()]] - Clear session data
+- [[id:20251015120300-get_session_stats][get_session_stats()]] - Session statistics
+- [[id:20251015120400-get_global_stats][get_global_stats()]] - Global statistics
+
+* Per-Session Tracking
+
+Each user session gets isolated tracker:
+#+begin_src python
+if session_id not in self.trackers:
+    self.trackers[session_id] = DeepSort(...)
+#+end_src
+
+Why?
+- Prevents cross-user ID conflicts
+- Allows independent tracking state
+- Session cleanup on disconnect
+
+* Trajectory Storage
+
+Position history stored per track:
+#+begin_src python
+track_key = f"{session_id}_{track_id}"
+self.track_histories[track_key].append((center_x, center_y))
+#+end_src
+
+Uses deque with maxlen=[[id:20251015120500-track_history_length][TRACK_HISTORY_LENGTH]] (30 frames).
+
+* Singleton Pattern
+
+#+begin_src python
+_tracking_manager = None
+
+def get_tracking_manager():
+    global _tracking_manager
+    if _tracking_manager is None:
+        _tracking_manager = ObjectTrackingManager()
+    return _tracking_manager
+#+end_src
+
+* Memory Management
+
+** Per Session
+- DeepSort tracker: ~50-100MB
+- Track histories: ~1KB per track
+
+** Cleanup
+- Manual: [[id:20251015115300-reset_session][reset_session()]]
+- Automatic: None (relies on session expiry)
+
+Consider implementing auto-cleanup for abandoned sessions.
+
+* Thread Safety
+
+Not thread-safe. Flask handles requests sequentially per session
+due to session management, so this is acceptable.
+
+* Session Lifecycle
+
+1. First detection → Create tracker
+2. Subsequent detections → Update tracker
+3. User stops → reset_session() called
+4. Session expires → Tracker remains (memory leak)
+
+See [[id:20251015120600-session_lifecycle][Session Lifecycle]]
+
+* Related Notes
+
+** Part Of
+- [[id:20251015111400-tracking_service_moc][Tracking Service MOC]]
+
+** Used By
+- [[id:20251015112300-detect_image][detect_image()]]
+- [[id:20251015120700-tracking_routes][Tracking Routes]]
+
+** Uses
+- [[id:20251015114700-deepsort_algorithm][DeepSORT Algorithm]]
+- [[id:20251015120800-python_deque][Python deque]]

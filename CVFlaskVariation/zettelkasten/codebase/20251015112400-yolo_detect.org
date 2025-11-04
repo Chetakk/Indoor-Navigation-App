@@ -1,0 +1,101 @@
+:PROPERTIES:
+:ID:       20251015112400-yolo_detect
+:ROAM_REFS: [[file:../app/services/yolo_detector.py::def detect]]
+:END:
+#+title: YOLODetector.detect() Method
+#+filetags: :function:yolo:detection:inference:
+
+* Method Signature
+
+#+begin_src python
+def detect(self, image, conf=None, iou=None, max_det=None, verbose=False):
+    """Run object detection on an image."""
+    # ...
+#+end_src
+
+Location: app/services/yolo_detector.py:66
+
+* Description
+
+Runs YOLO11 inference on an image to detect objects. Handles confidence
+thresholds, NMS, and device management.
+
+* Parameters
+
+- image :: np.ndarray - Image in BGR format (OpenCV)
+- conf :: float (optional) - Confidence threshold 0.0-1.0
+- iou :: float (optional) - IOU threshold for NMS
+- max_det :: int (optional) - Maximum detections per image
+- verbose :: bool (default=False) - Print detection info
+
+* Returns
+
+YOLO results object with:
+- boxes :: Boxes - Detection bounding boxes
+  - xyxy :: tensor - Box coordinates [x1, y1, x2, y2]
+  - conf :: tensor - Confidence scores
+  - cls :: tensor - Class IDs
+
+* Default Values
+
+From [[id:20251015114100-constants_detection][Detection Constants]]:
+- DEFAULT_CONFIDENCE_THRESHOLD = 0.30
+- DEFAULT_IOU_THRESHOLD = 0.65
+- MAX_DETECTIONS = 50
+
+* Algorithm
+
+1. Validate model is loaded
+2. Apply default thresholds if not provided
+3. Call YOLO model with configured parameters:
+   #+begin_src python
+   results = self.model(
+       image,
+       verbose=verbose,
+       device=self.device,
+       conf=conf,
+       iou=iou,
+       max_det=max_det
+   )
+   #+end_src
+4. Return results object
+
+* Performance
+
+** GPU Mode
+- RTX 3060: ~60-100ms
+- RTX 4090: ~30-60ms
+
+** CPU Mode
+- i7-12700K: ~100-250ms
+- i5-10400: ~250-500ms
+
+See [[id:20251015114200-yolo_performance][YOLO Performance Analysis]]
+
+* Related Notes
+
+** Part Of
+- [[id:20251015112800-yolo_detector_class][YOLODetector Class]]
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+
+** Called By
+- [[id:20251015112300-detect_image][detect_image()]]
+
+** Uses
+- [[id:20251015114300-ultralytics_yolo][Ultralytics YOLO Model]]
+- [[id:20251015114400-nms_algorithm][Non-Maximum Suppression (NMS)]]
+
+* Technical Details
+
+** Confidence Threshold
+Filters out detections with confidence < threshold.
+Higher = fewer false positives, more false negatives.
+
+** IOU Threshold
+Used in NMS to remove overlapping boxes.
+See [[id:20251015114400-nms_algorithm][NMS Algorithm]] for details.
+
+** Device Management
+- Automatic GPU detection via torch.cuda.is_available()
+- Fallback to CPU if GPU unavailable
+- See [[id:20251015114500-device_management][Device Management]]

@@ -1,0 +1,170 @@
+:PROPERTIES:
+:ID:       20251015112100-accessibility_moc
+:ROAM_ALIASES: "Accessibility" "Blind Users" "TTS" "Audio"
+:END:
+#+title: Accessibility MOC
+#+filetags: :moc:accessibility:blind:audio:
+
+* Overview
+
+Comprehensive accessibility features for blind and visually impaired users.
+System designed from ground up for non-visual interaction.
+
+* Core Features
+
+** Audio Feedback
+- [[id:20251015115900-audio_speak][speak()]] - Text-to-speech engine
+- [[id:20251015120900-audio_priority_queue][Priority Queue]] - Importance-based announcements
+- [[id:20251015121000-audio_voice_selection][Voice Selection]] - Clear, natural voices
+
+** Voice Commands
+- [[id:20251015121100-voice_recognition][Voice Recognition]] - Web Speech API
+- [[id:20251015121200-voice_commands_list][Supported Commands]] - Start, stop, find, help
+- [[id:20251015121300-voice_find_objects][Find Objects]] - Voice-activated navigation
+
+** Auto-Start
+- [[id:20251015121400-auto_start_mobile][Mobile Auto-Start]] - Camera starts automatically
+- [[id:20251015121500-auto_start_announcement][Startup Announcement]] - Audio instructions
+
+** Collision Warnings
+- [[id:20251015116200-check_collision_warnings][Collision Detection]] - Real-time hazard warnings
+- [[id:20251015121600-collision_severity_levels][Severity Levels]] - Critical > High > Normal
+- [[id:20251015121700-collision_audio_urgency][Audio Urgency]] - Faster speech for dangers
+- [[id:20251015184800-perspective_aware_movement][Perspective-Aware Directions]] - "Approaching" not "moving down"
+
+** Navigation
+- [[id:20251015184400-reactive_navigation][Reactive Navigation]] - Real-time obstacle avoidance
+- [[id:20251015184700-generate_voice_guidance][Voice Guidance]] - Natural language navigation
+- [[id:20251015121300-voice_find_objects][Find Objects]] - Voice-activated navigation to objects
+
+* Audio System Design
+
+** Priority Levels
+1. Critical - Immediate collision danger
+2. High - Approaching objects, new hazards
+3. Normal - General detections
+4. Low - Background information
+
+See [[id:20251015121800-audio_priority_system][Audio Priority System]]
+
+** Queue Management
+- FIFO with size limit (1 item)
+- Latest information prioritized
+- Old announcements discarded
+
+See [[id:20251015120900-audio_priority_queue][Priority Queue]]
+
+** Interruption Logic
+- Critical: Cancel all, speak immediately
+- High: Cancel current, speak immediately
+- Normal/Low: Queue if speaking
+
+** Speech Parameters
+- Critical: 1.2x rate, max volume
+- High: 1.1x rate, max volume
+- Normal: 0.95x rate, 90% volume
+
+* Detection Announcements
+
+** What Is Announced
+- Object class name
+- Distance estimation (close, medium, far)
+- Direction (left, right, center, ahead)
+- Movement ([[id:20251015184800-perspective_aware_movement][perspective-aware]]: "approaching", "moving away", not "up/down")
+- Collision warnings (if approaching)
+- [[id:20251015184700-generate_voice_guidance][Navigation guidance]] ("Turn left, 3 meters", "Walk straight ahead")
+
+** Announcement Frequency
+Dynamic based on distance:
+- Immediate (very close): Every 2 seconds
+- Near: Every 4 seconds
+- Medium: Every 6 seconds
+- Far: Every 8 seconds
+
+See [[id:20251015121900-announcement_intervals][Announcement Intervals]]
+
+** What Is NOT Announced
+- Objects leaving view (silent cleanup)
+- Low confidence detections (< 30%)
+- Blacklisted classes (buildings)
+
+* Tracking Announcements
+
+- New objects detected
+- Objects started moving
+- Direction changes
+- Speed changes
+- Long stationary objects (every 15s)
+
+See [[id:20251015117900-announce_detections][announceDetections()]]
+
+* Voice Commands
+
+** Basic Commands
+- "start" / "begin" - Start detection
+- "stop" / "pause" - Stop detection
+- "where" / "what" - Announce current objects
+- "help" - List commands
+
+** Navigation Commands
+- "find door" - Navigate to door
+- "find chair" - Navigate to chair
+- Works with any of 600+ object classes
+
+See [[id:20251015121200-voice_commands_list][Voice Commands List]]
+
+* Screen Reader Support
+
+** ARIA Labels
+All UI elements have aria-label attributes
+
+** Semantic HTML
+Proper heading hierarchy and landmarks
+
+** Keyboard Navigation
+Full keyboard accessibility (spacebar to start/stop)
+
+* Mobile Optimization
+
+- Auto-start on load
+- Tap-anywhere-to-start (planned)
+- Shake-to-start gesture (planned)
+- Back camera default
+- Large touch targets
+
+* Browser Compatibility
+
+** Web Speech API Support
+- Chrome/Edge: Excellent
+- Safari: Good
+- Firefox: Limited
+- IE11: Not supported
+
+* Performance for Blind Users
+
+** Target Metrics
+- Detection latency: <1000ms (1 FPS minimum)
+- Audio latency: <300ms
+- Voice command response: <500ms
+
+** Real-Time Requirements
+- Immediate collision warnings (critical priority)
+- Fast announcement of new objects
+- Responsive voice commands
+
+See [[id:20251015112200-performance_moc][Performance MOC]]
+
+* Related Notes
+
+** Audio System
+- [[id:20251015111700-audio_module_moc][Audio Module MOC]]
+- [[id:20251015115900-audio_speak][speak()]]
+- [[id:20251015120900-audio_priority_queue][Priority Queue]]
+
+** Detection
+- [[id:20251015116200-check_collision_warnings][Collision Warnings]]
+- [[id:20251015117900-announce_detections][Detection Announcements]]
+
+** Voice
+- [[id:20251015121100-voice_recognition][Voice Recognition]]
+- [[id:20251015121300-voice_find_objects][Find Objects]]

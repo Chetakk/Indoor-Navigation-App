@@ -1,0 +1,211 @@
+#+TITLE: Bounding Box Formats
+#+DATE: 2025-10-16 20:00
+#+TAGS: :annotation: :concept: :bounding_box:
+#+ID: 20251016200000
+
+:PROPERTIES:
+:ID:       20251016200000
+:ROAM_ALIASES: "Bbox Formats" "Box Representations" "Detection Box Formats"
+:END:
+
+* Overview
+
+Bounding boxes can be represented in multiple coordinate formats depending on the use case. Each format has specific advantages for different operations like object detection, tracking, or annotation storage.
+
+* Common Bounding Box Formats
+
+** XYXY Format (Corner Format)
+
+Also known as "Min-Max Format" or "Two-Point Format"
+
+- *Structure*: [x1, y1, x2, y2]
+- *Components*:
+  - x1, y1: Top-left corner coordinates
+  - x2, y2: Bottom-right corner coordinates
+- *Used by*: YOLO model output (native format)
+- *Advantages*:
+  - Direct representation of bbox boundaries
+  - Easy visualization
+  - Simple overlap calculations
+
+*Example*:
+#+BEGIN_EXAMPLE
+bbox = [100, 150, 300, 400]
+# Top-left: (100, 150)
+# Bottom-right: (300, 400)
+# Width: 300 - 100 = 200
+# Height: 400 - 150 = 250
+#+END_EXAMPLE
+
+** XYWH Format (Center Format)
+
+Center-based representation
+
+- *Structure*: [x_center, y_center, width, height]
+- *Components*:
+  - x_center: X coordinate of box center
+  - y_center: Y coordinate of box center
+  - width: Box width
+  - height: Box height
+- *Used by*: YOLO label files (normalized), some annotation tools
+- *Advantages*:
+  - Natural for describing object location
+  - Easier to apply geometric transformations (rotation, scaling)
+  - Normalized version (0-1 range) is resolution-independent
+
+*Example*:
+#+BEGIN_EXAMPLE
+bbox = [200, 275, 200, 250]
+# Center: (200, 275)
+# Width: 200
+# Height: 250
+#+END_EXAMPLE
+
+** LTWH Format (Left-Top-Width-Height)
+
+Top-left corner with dimensions
+
+- *Structure*: [left, top, width, height]
+- *Components*:
+  - left: X coordinate of left edge
+  - top: Y coordinate of top edge
+  - width: Box width
+  - height: Box height
+- *Used by*: DeepSORT tracker[fn:1], many computer vision libraries
+- *Advantages*:
+  - Intuitive for drawing operations
+  - Natural for GUI/rendering systems
+  - Common in OpenCV functions
+
+*Example*:
+#+BEGIN_EXAMPLE
+bbox = [100, 150, 200, 250]
+# Top-left: (100, 150)
+# Width: 200
+# Height: 250
+#+END_EXAMPLE
+
+* Format Conversions
+
+** XYXY to LTWH
+#+BEGIN_SRC python
+def xyxy_to_ltwh(bbox):
+    """Convert [x1, y1, x2, y2] to [left, top, width, height]"""
+    x1, y1, x2, y2 = bbox
+    left = x1
+    top = y1
+    width = x2 - x1
+    height = y2 - y1
+    return [left, top, width, height]
+#+END_SRC
+
+** LTWH to XYXY
+#+BEGIN_SRC python
+def ltwh_to_xyxy(bbox):
+    """Convert [left, top, width, height] to [x1, y1, x2, y2]"""
+    left, top, width, height = bbox
+    x1 = left
+    y1 = top
+    x2 = left + width
+    y2 = top + height
+    return [x1, y1, x2, y2]
+#+END_SRC
+
+** XYXY to XYWH (Center)
+#+BEGIN_SRC python
+def xyxy_to_xywh_center(bbox):
+    """Convert [x1, y1, x2, y2] to [x_center, y_center, width, height]"""
+    x1, y1, x2, y2 = bbox
+    width = x2 - x1
+    height = y2 - y1
+    x_center = x1 + width / 2
+    y_center = y1 + height / 2
+    return [x_center, y_center, width, height]
+#+END_SRC
+
+** XYWH (Center) to XYXY
+#+BEGIN_SRC python
+def xywh_center_to_xyxy(bbox):
+    """Convert [x_center, y_center, width, height] to [x1, y1, x2, y2]"""
+    x_center, y_center, width, height = bbox
+    x1 = x_center - width / 2
+    y1 = y_center - height / 2
+    x2 = x_center + width / 2
+    y2 = y_center + height / 2
+    return [x1, y1, x2, y2]
+#+END_SRC
+
+* Usage in CV-Project Codebase
+
+** Detection Pipeline (app/routes/detection.py)
+
+The detection route converts YOLO's native XYXY format to LTWH for the tracker:
+
+#+BEGIN_SRC python
+# Line 138-152 in detection.py
+bbox_coords = box.xyxy[0].tolist()  # [x1, y1, x2, y2] from YOLO
+x1, y1, x2, y2 = bbox_coords
+width = x2 - x1
+height = y2 - y1
+
+raw_detections.append({
+    'bbox': [x1, y1, width, height],  # LTWH for tracker
+    'bbox_xyxy': bbox_coords,         # Keep XYXY original
+    'confidence': confidence,
+    'class_name': normalized_class_name,
+    'class_id': class_id
+})
+#+END_SRC
+
+** Why Multiple Formats?
+
+1. *XYXY from YOLO*: Native model output format
+2. *LTWH for DeepSORT*: Required by tracking algorithm
+3. *Both stored*: Flexibility for different operations
+
+* Normalized vs Absolute Coordinates
+
+** Absolute Coordinates
+- Pixel values relative to image dimensions
+- Used in: Runtime detection, tracking, visualization
+- Example: [100, 150, 300, 400] on 640x640 image
+
+** Normalized Coordinates
+- Values in range [0, 1] relative to image dimensions
+- Used in: YOLO label files, resolution-independent storage
+- Conversion: divide by image width/height
+- Example: [0.15625, 0.234375, 0.46875, 0.625] on 640x640 image
+
+#+BEGIN_SRC python
+def normalize_bbox(bbox, img_width, img_height):
+    """Normalize XYXY coordinates to [0, 1] range"""
+    x1, y1, x2, y2 = bbox
+    return [
+        x1 / img_width,
+        y1 / img_height,
+        x2 / img_width,
+        y2 / img_height
+    ]
+
+def denormalize_bbox(bbox, img_width, img_height):
+    """Convert normalized coordinates back to pixels"""
+    x1, y1, x2, y2 = bbox
+    return [
+        x1 * img_width,
+        y1 * img_height,
+        x2 * img_width,
+        y2 * img_height
+    ]
+#+END_SRC
+
+* Related Notes
+
+- [[id:20251016200100][YOLO Label Format]] - Uses normalized XYWH format
+- [[id:20251016200700][Bounding Box Coordinate Conversions]] - Code examples from codebase
+- [[id:20251016200200][CVAT Annotation Workflow]] - Annotation tool bbox handling
+- [[id:20251015130450][Bounding Box Predictions]] - YOLO prediction details
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub for annotation topics
+
+* Footnotes
+
+[fn:1] DeepSORT tracker requires LTWH format for its internal Kalman filter calculations. See app/services/tracker.py for implementation details.

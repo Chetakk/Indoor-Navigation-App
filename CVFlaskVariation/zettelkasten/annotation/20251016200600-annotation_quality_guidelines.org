@@ -1,0 +1,379 @@
+#+TITLE: Annotation Quality Guidelines
+#+DATE: 2025-10-16 20:06
+#+TAGS: :annotation: :quality: :guidelines:
+#+ID: 20251016200600
+
+:PROPERTIES:
+:ID:       20251016200600
+:ROAM_ALIASES: "Annotation Standards" "Quality Control" "Labeling Best Practices"
+:END:
+
+* Overview
+
+Consistent, high-quality annotations are critical for training robust object detection models. This guide establishes quality standards for the CV-Project annotation workflow.
+
+* Core Principles
+
+1. *Tightness*: Bounding boxes should fit objects snugly
+2. *Completeness*: Annotate all relevant objects
+3. *Consistency*: Apply same rules across all images
+4. *Clarity*: When uncertain, establish and document conventions
+
+* Bounding Box Tightness
+
+** Correct Tightness
+
+The bounding box should:
+- Touch the object's extremities
+- Include all visible parts of the object
+- Exclude background pixels where possible
+- Have minimal padding (1-2 pixels acceptable)
+
+#+BEGIN_EXAMPLE
+Correct:
+    +--------+
+    | CHAIR  |
+    +--------+
+
+Too Loose:
+    +------------+
+    |   CHAIR    |
+    +------------+
+
+Too Tight:
+    +------+
+    | CHAI |  <-- Missing part
+    +------+
+#+END_EXAMPLE
+
+** Special Cases
+
+*Rounded objects*: Use smallest enclosing rectangle
+*Complex shapes*: Include all protrusions
+*Thin objects* (e.g., lamp post): Ensure visibility at small scales
+
+* Handling Occlusion
+
+** Partial Occlusion
+
+*Rule*: Annotate if >30% of object is visible
+
+#+BEGIN_EXAMPLE
+Person partially behind door:
++------+--------+
+|      |  PER   |  <-- Annotate visible part
++------+--------+
+ DOOR    SON
+#+END_EXAMPLE
+
+** Heavy Occlusion
+
+*Rule*: Skip if <30% visible OR object class unclear
+
+*Exception*: For critical classes (person), annotate if confident
+
+** Overlapping Objects
+
+*Rule*: Create separate boxes for each object instance
+
+#+BEGIN_EXAMPLE
+Two overlapping chairs:
+  +-------+
+  | CHAIR |
+  |   +---|----+
+  +---|---+    |
+      |  CHAIR |
+      +--------+
+#+END_EXAMPLE
+
+* Truncation (Objects at Image Boundary)
+
+** Standard Rule
+
+*Annotate truncated objects* if majority is visible
+
+#+BEGIN_EXAMPLE
+Image edge
+|
+| +--------+
+| | TABLE  |  <-- Annotate (>50% visible)
+| +--------+
+|
+#+END_EXAMPLE
+
+** Minimal Visibility
+
+*Skip* if only small portion visible (<20%)
+
+#+BEGIN_EXAMPLE
+Image edge
+|
+| +--+
+| |TA|  <-- Skip (too little visible)
+| +--+
+|
+#+END_EXAMPLE
+
+* Class Assignment
+
+** Clear Cases
+
+Assign obvious class when object is clearly identifiable
+
+Examples:
+- Standard dining chair -> "chair"
+- Wooden table -> "table"
+- Standing person -> "person"
+
+** Ambiguous Cases
+
+Establish conventions for edge cases:
+
+*Office chair vs. Stool*:
+- Has backrest -> "chair"
+- No backrest -> "stool"
+
+*Table vs. Desk*:
+- Use "table" for all (unified class)
+- OR maintain separate if training data supports distinction
+
+*Sofa vs. Couch vs. Loveseat*:
+- Use "sofa" for all (unified class)
+
+*Person vs. Mannequin*:
+- Real person -> "person"
+- Mannequin -> Skip (unless specifically training for it)
+
+** Class Hierarchy
+
+For CV-Project, use broad classes:
+- All human forms -> "person"
+- All seating furniture -> "chair" (or separate "chair"/"sofa")
+- All tables -> "table"
+
+*Document exceptions* in annotation guide
+
+* Handling Reflections and Mirrors
+
+** Rule
+
+*Do NOT annotate reflections*
+
+Reason: Reflections are not physical objects for navigation
+
+Exception: If reflection is indistinguishable from real object, document as edge case
+
+#+BEGIN_EXAMPLE
+        MIRROR
+      |        |
+Real  | Mirror |
+Person| Image  |  <-- Only annotate real person
+      |  (skip)|
+      |        |
+#+END_EXAMPLE
+
+* Difficult Objects
+
+** Low Quality Images
+
+*Blur/Motion*: Annotate if object class is clear
+*Low resolution*: Skip if object type uncertain
+*Dark/Underexposed*: Annotate if outline visible
+
+** Small Objects
+
+*Rule*: Annotate objects >10 pixels in both dimensions
+
+Smaller objects:
+- Hard to learn from
+- Often false positives at inference
+- Better to skip in training data
+
+** Unusual Viewpoints
+
+*Top-down*: Annotate if object recognizable
+*Extreme angle*: Use judgment; maintain consistency
+
+* Consistency Checks
+
+## Self-Review Checklist
+
+Before finalizing annotations:
+
+- [ ] All visible objects annotated?
+- [ ] Boxes tight around objects?
+- [ ] Correct class labels?
+- [ ] No duplicate boxes for same object?
+- [ ] Consistent handling of edge cases?
+- [ ] Occluded objects handled per guidelines?
+
+** Batch Consistency
+
+Review 10-20 images at once:
+- Check for labeling drift
+- Verify same standards applied
+- Correct systematic errors
+
+** Inter-Annotator Agreement
+
+If multiple annotators:
+- Compare annotations on same images
+- Calculate IoU agreement (target: >0.85)
+- Discuss discrepancies
+- Update guidelines
+
+* Common Mistakes
+
+** Mistake 1: Loose Bounding Boxes
+
+*Problem*: Excessive padding around objects
+*Impact*: Model learns to detect background as object
+*Fix*: Tighten boxes to object edges
+
+** Mistake 2: Inconsistent Class Labels
+
+*Problem*: "chair" vs. "seat" vs. "stool" for similar objects
+*Impact*: Model confusion, poor generalization
+*Fix*: Establish class taxonomy, document conventions
+
+** Mistake 3: Missing Occluded Objects
+
+*Problem*: Only annotating fully visible objects
+*Impact*: Model fails on partial views
+*Fix*: Annotate partial objects (>30% rule)
+
+** Mistake 4: Annotating Ambiguous Objects
+
+*Problem*: Guessing class when uncertain
+*Impact*: Noisy training data
+*Fix*: Skip ambiguous cases or flag for review
+
+** Mistake 5: Duplicate Boxes
+
+*Problem*: Multiple overlapping boxes for same object
+*Impact*: Confuses NMS, training instability
+*Fix*: One box per object instance
+
+* Validation Tools
+
+** Automated Checks
+
+#+BEGIN_SRC python
+def validate_annotations(label_file, img_width, img_height):
+    """Check annotations for common issues."""
+    issues = []
+
+    with open(label_file, 'r') as f:
+        boxes = []
+        for i, line in enumerate(f, 1):
+            parts = line.strip().split()
+
+            if len(parts) != 5:
+                issues.append(f"Line {i}: Invalid format")
+                continue
+
+            class_id, x, y, w, h = map(float, parts)
+
+            # Check ranges
+            if not (0 <= x <= 1 and 0 <= y <= 1):
+                issues.append(f"Line {i}: Center out of range")
+
+            if not (0 < w <= 1 and 0 < h <= 1):
+                issues.append(f"Line {i}: Size out of range")
+
+            # Check minimum size (10 pixels)
+            if w * img_width < 10 or h * img_height < 10:
+                issues.append(f"Line {i}: Object too small")
+
+            boxes.append((x, y, w, h))
+
+        # Check for duplicate boxes (IoU > 0.9)
+        for i, box1 in enumerate(boxes):
+            for j, box2 in enumerate(boxes[i+1:], i+1):
+                iou = calculate_iou(box1, box2)
+                if iou > 0.9:
+                    issues.append(f"Potential duplicate: lines {i+1}, {j+1}")
+
+    return issues
+#+END_SRC
+
+** Visual Review
+
+Use CVAT's review mode or custom script:
+
+#+BEGIN_SRC python
+import cv2
+import numpy as np
+from pathlib import Path
+
+def visualize_annotations(image_path, label_path):
+    """Draw annotations on image for review."""
+    img = cv2.imread(image_path)
+    h, w = img.shape[:2]
+
+    with open(label_path, 'r') as f:
+        for line in f:
+            cls_id, x_c, y_c, width, height = map(float, line.split())
+
+            # Convert to pixel coordinates
+            x1 = int((x_c - width/2) * w)
+            y1 = int((y_c - height/2) * h)
+            x2 = int((x_c + width/2) * w)
+            y2 = int((y_c + height/2) * h)
+
+            # Draw box
+            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(img, f"Class {int(cls_id)}", (x1, y1-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+    cv2.imshow("Annotations", img)
+    cv2.waitKey(0)
+#+END_SRC
+
+* Documentation Requirements
+
+** Annotation Log
+
+Keep log of decisions:
+
+#+BEGIN_EXAMPLE
+Date: 2025-10-16
+Annotator: JD
+Decision: Treat all office chairs as "chair" class
+Reason: Insufficient training data for "office_chair" subclass
+Images affected: batch_003
+#+END_EXAMPLE
+
+** Edge Case Gallery
+
+Maintain examples of difficult cases with resolutions:
+
+#+BEGIN_EXAMPLE
+Case: Person partially behind translucent curtain
+Resolution: Annotate if face/body outline clearly visible
+Example: image_0042.jpg
+#+END_EXAMPLE
+
+* Training Data Statistics
+
+Track annotation quality metrics:
+
+- Total images annotated
+- Average boxes per image
+- Class distribution
+- Annotation time per image
+- Error rate (from validation)
+
+Target metrics for CV-Project:
+- 1000+ images (minimum)
+- 5-10 objects per image (average)
+- Balanced class distribution (within 2x)
+- <5% error rate on review
+
+* Related Notes
+
+- [[id:20251016200200][CVAT Annotation Workflow]] - Annotation process
+- [[id:20251016200000][Bounding Box Formats]] - Coordinate systems
+- [[id:20251016200100][YOLO Label Format]] - File format details
+- [[id:20251016190000][CVAT Overview]] - Annotation tool features
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub

@@ -1,0 +1,204 @@
+#+TITLE: org-roam Zettelkasten - Getting Started
+#+AUTHOR: Auto-generated Documentation
+#+DATE: 2025-10-15
+
+* What Is This?
+
+This is an org-roam knowledge base documenting the CV-Project blind navigation
+system using the Zettelkasten method with truly atomic, interconnected notes.
+
+* Requirements
+
+** Emacs with org-roam
+You need Emacs with org-roam v2 installed to use this properly.
+
+*** Installation
+#+begin_src emacs-lisp
+;; Add to your Emacs config
+(use-package org-roam
+  :ensure t
+  :custom
+  (org-roam-directory "~/path/to/zettelkasten/")
+  :bind (("C-c n l" . org-roam-buffer-toggle)
+         ("C-c n f" . org-roam-node-find)
+         ("C-c n i" . org-roam-node-insert)
+         ("C-c n g" . org-roam-graph))
+  :config
+  (org-roam-db-autosync-mode))
+#+end_src
+
+** First Time Setup
+
+1. Open Emacs
+2. Set org-roam-directory to this folder
+3. Run: M-x org-roam-db-sync
+4. Wait for database to build
+
+* Getting Started
+
+** Start Here
+Open the main index: [[id:20251015110900-cv_project_index][CV Project Index]]
+
+Or run: M-x org-roam-node-find → "CV Project"
+
+** Navigation
+
+*** Find Notes
+- M-x org-roam-node-find - Search all notes
+- M-x org-roam-node-insert - Insert link to note
+- C-c C-o - Follow link under cursor
+
+*** View Backlinks
+- M-x org-roam-buffer-toggle - Show what links to current note
+- Backlinks panel shows all notes that reference this one
+
+*** Visualize Graph
+- M-x org-roam-graph - See visual connection map
+- Requires Graphviz installed
+
+** Note Structure
+
+Every note has:
+- Timestamp-based ID (20251015HHMMSS)
+- :PROPERTIES: drawer with :ID:
+- Optional :ROAM_REFS: for source code
+- Optional :ROAM_ALIASES: for alternative names
+- #+filetags for categorization
+- [[id:]] links to other notes
+
+* Note Organization
+
+** Maps of Content (MOCs)
+High-level organizational notes that collect related atomic notes:
+- [[id:20251015111200-data_flow_moc][Data Flow MOC]]
+- [[id:20251015111300-detection_service_moc][Detection Service MOC]]
+- [[id:20251015112100-accessibility_moc][Accessibility MOC]]
+
+** Function Notes
+One note per function with complete documentation:
+- [[id:20251015112300-detect_image][detect_image()]]
+- [[id:20251015112400-yolo_detect][YOLODetector.detect()]]
+- [[id:20251015112500-update_tracks][update_tracks()]]
+
+** Class Notes
+One note per class:
+- [[id:20251015112800-yolo_detector_class][YOLODetector Class]]
+- [[id:20251015112900-object_tracking_manager_class][ObjectTrackingManager Class]]
+
+** Algorithm Notes
+Detailed algorithm explanations:
+- [[id:20251015114700-deepsort_algorithm][DeepSORT Algorithm]]
+- [[id:20251015112700-astar_pathfinding][A* Pathfinding]]
+
+* Recommended Workflows
+
+** Learning the System (New Developer)
+1. Start: [[id:20251015110900-cv_project_index][CV Project Index]]
+2. Read: [[id:20251015111200-data_flow_moc][Data Flow MOC]] - Understand pipeline
+3. Explore: [[id:20251015112300-detect_image][detect_image()]] - Main endpoint
+4. Follow [[id:]] links to related notes
+5. Use org-roam-buffer to see backlinks
+
+** Finding a Function
+1. M-x org-roam-node-find
+2. Type function name
+3. Read note
+4. Check backlinks to see what calls it
+
+** Understanding an Algorithm
+1. Find algorithm note (e.g., [[id:20251015114700-deepsort_algorithm][DeepSORT]])
+2. Read explanation
+3. Follow links to related concepts
+4. Check implementation via :ROAM_REFS:
+
+** Adding New Notes
+1. M-x org-roam-node-find
+2. Type new note name
+3. org-roam creates file with timestamp ID
+4. Add :PROPERTIES:, tags, content
+5. Link to/from other notes with M-x org-roam-node-insert
+
+* File Naming Convention
+
+Format: YYYYMMDDHHMMSS-note_name.org
+
+Example: 20251015112300-detect_image.org
+
+- Timestamp ensures uniqueness
+- Descriptive name for readability
+- All lowercase with underscores
+
+* Linking Convention
+
+Always use [[id:]] links, NOT [[file:]] links:
+
+Good: [[id:20251015112300-detect_image][detect_image()]]
+Bad: [[file:20251015112300-detect_image.org][detect_image()]]
+
+Why? ID links survive file renames and enable backlinks.
+
+* Tags Convention
+
+Use #+filetags: at top of file:
+
+- :moc: - Maps of Content
+- :function: - Function documentation
+- :class: - Class documentation
+- :algorithm: - Algorithm explanation
+- :concept: - Abstract concept
+- :index: - Index note
+
+Can combine: #+filetags: :function:detection:api:
+
+* Current Coverage
+
+** Documented (15+ notes)
+- Main detection pipeline
+- Core YOLO functions
+- DeepSORT tracking
+- Collision prediction
+- A* pathfinding
+- Key classes
+- Main algorithms
+
+** Stub References (50+ IDs)
+Many notes reference functions/concepts that don't have full notes yet.
+These appear as [[id:...]] links - you can create them with org-roam-node-find.
+
+** To Be Created
+- All utility functions
+- All route handlers
+- All frontend functions
+- All constants
+- All configuration
+- Performance analysis notes
+- Error handling notes
+
+Feel free to create these as needed!
+
+* Tips
+
+** Use org-roam-node-find Liberally
+It's fast and fuzzy-matches. Don't remember exact name? Type partial match.
+
+** Don't Worry About Perfect Organization
+The network of links IS the organization. Let it emerge organically.
+
+** Create Notes Freely
+If you find yourself explaining a concept, create a note for it and link it.
+
+** Check Backlinks Often
+They show you unexpected connections and help you understand impact.
+
+** One Concept Per Note
+If a note covers multiple concepts, split it. Atomic notes are more reusable.
+
+* Further Reading
+
+- org-roam docs: https://www.orgroam.com/manual.html
+- Zettelkasten method: https://zettelkasten.de/
+- How to Take Smart Notes (book by Sonke Ahrens)
+
+* Questions?
+
+See [[id:20251015110900-cv_project_index][CV Project Index]] for overview and navigation guide.

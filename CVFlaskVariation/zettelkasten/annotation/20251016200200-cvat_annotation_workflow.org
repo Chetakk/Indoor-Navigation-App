@@ -1,0 +1,341 @@
+#+TITLE: CVAT Annotation Workflow
+#+DATE: 2025-10-16 20:02
+#+TAGS: :annotation: :cvat: :workflow:
+#+ID: 20251016200200
+
+:PROPERTIES:
+:ID:       20251016200200
+:ROAM_ALIASES: "CVAT Workflow" "Annotation Process" "CVAT Guide"
+:END:
+
+* Overview
+
+This document describes the recommended workflow for using CVAT (Computer Vision Annotation Tool) to create training datasets for the CV-Project, specifically for fine-tuning YOLOv8 models on custom indoor navigation scenarios.
+
+* Prerequisites
+
+** CVAT Installation Options
+
+1. *Cloud Version*: https://app.cvat.ai (recommended for getting started)
+2. *Self-hosted Docker*: Full control, local data storage
+3. *Desktop Application*: Offline annotation capability
+
+** Project Requirements
+
+- Image dataset (extracted frames from utilities/framer.py)
+- Class list defined (indoor objects, obstacles, furniture)
+- Quality guidelines established (see [[id:20251016200600][Annotation Quality Guidelines]])
+
+* Workflow Steps
+
+** Step 1: Create CVAT Project
+
+1. Log into CVAT
+2. Click "Projects" -> "Create new project"
+3. Configure project:
+   - *Name*: "CV-Project-Indoor-Navigation"
+   - *Labels*: Define your classes (person, chair, table, door, wall, etc.)
+   - *Bug tracker*: Optional GitHub issues link
+
+*Example Label Configuration*:
+#+BEGIN_EXAMPLE
+person
+chair
+table
+sofa
+door
+stairs
+wall
+cabinet
+plant
+#+END_EXAMPLE
+
+** Step 2: Create Annotation Task
+
+1. Within project, click "Create new task"
+2. Task configuration:
+   - *Name*: Descriptive (e.g., "Living-Room-Scene-001")
+   - *Subset*: train/val/test
+   - *Upload images*: Select from your dataset
+   - *Image quality*: 95 (high quality for inspection)
+   - *Overlap*: 0 (unless doing video annotation)
+
+** Step 3: Annotate Images
+
+*** Opening the Task
+- Click on task name
+- Click "Job #1" to start annotation
+
+*** Annotation Interface
+
+*Keyboard Shortcuts* (essential for speed):
+- N: Create new bounding box
+- Shape: Select shape mode (rectangle for bbox)
+- Esc: Cancel current annotation
+- F: Finish annotation
+- Ctrl+S: Save work
+- F2: Previous image
+- F3: Next image
+
+*** Creating Bounding Boxes
+
+1. Press 'N' or click "Create Shape" -> "Rectangle"
+2. Select class label from dropdown
+3. Click and drag to create bounding box
+4. Adjust corners for tight fit
+5. Press 'F' to finish
+6. Repeat for all objects in image
+
+*** Annotation Guidelines
+
+*Tightness*: Boxes should be tight around objects, no excessive padding
+*Occlusion*: Annotate partially visible objects
+*Truncation*: Annotate objects cut off by image boundary
+*Overlap*: Handle overlapping objects separately
+*Consistency*: Use same criteria across all images
+
+See [[id:20251016200600][Annotation Quality Guidelines]] for detailed rules.
+
+*** Progress Tracking
+
+- CVAT shows completion status per task
+- Mark images as "Done" after annotation
+- Review mode: Check annotations before export
+
+** Step 4: Quality Control
+
+*** Self-Review
+1. Switch to "Review" mode
+2. Check each annotation for:
+   - Correct class labels
+   - Tight bounding boxes
+   - No missed objects
+   - No duplicate boxes
+
+*** Batch Operations
+- Select multiple boxes: Ctrl+Click
+- Delete selected: Delete key
+- Change class: Right-click -> "Change label"
+- Copy/paste: Ctrl+C/Ctrl+V
+
+** Step 5: Export Annotations
+
+*** For YOLO Training
+
+1. Go to task page
+2. Click "Actions" -> "Export annotations"
+3. Select format: *YOLO 1.1*
+4. Download .zip file
+
+*Export structure*:
+#+BEGIN_EXAMPLE
+export.zip
+|-- obj_train_data/
+|   |-- image001.jpg
+|   |-- image001.txt
+|   |-- image002.jpg
+|   |-- image002.txt
+|   `-- ...
+`-- obj.names
+#+END_EXAMPLE
+
+*** Reorganize for YOLO Format
+
+After extraction, reorganize into standard YOLO structure:
+
+#+BEGIN_SRC bash
+# Create directory structure
+mkdir -p dataset/images/train dataset/images/val
+mkdir -p dataset/labels/train dataset/labels/val
+
+# Move images
+mv obj_train_data/*.jpg dataset/images/train/
+
+# Move labels
+mv obj_train_data/*.txt dataset/labels/train/
+
+# Split train/val as needed (80/20 split typical)
+#+END_SRC
+
+See [[id:20251016200400][CVAT YOLO Integration]] for automated scripts.
+
+** Step 6: Validate Exported Data
+
+Run validation checks:
+
+#+BEGIN_SRC python
+from pathlib import Path
+
+def validate_export(dataset_path):
+    """Validate CVAT export matches YOLO requirements."""
+    images_train = list(Path(dataset_path, "images/train").glob("*.jpg"))
+    labels_train = list(Path(dataset_path, "labels/train").glob("*.txt"))
+
+    print(f"Images: {len(images_train)}")
+    print(f"Labels: {len(labels_train)}")
+
+    # Check for missing labels
+    for img in images_train:
+        label_file = Path(dataset_path, "labels/train", f"{img.stem}.txt")
+        if not label_file.exists():
+            print(f"Missing label: {label_file}")
+
+validate_export("dataset")
+#+END_SRC
+
+* Advanced Features
+
+** Automatic Annotation
+
+CVAT supports AI-assisted annotation:
+1. Upload pre-trained model
+2. Run automatic annotation
+3. Manually correct results
+4. Saves significant time on large datasets
+
+*Workflow*:
+- Manually annotate 10-20% of dataset
+- Train initial model
+- Use model to auto-annotate remaining images
+- Review and correct predictions
+
+** Collaborative Annotation
+
+For team annotation:
+1. Create project with multiple tasks
+2. Assign tasks to different annotators
+3. Set up review workflow
+4. Use built-in review tools
+5. Track inter-annotator agreement
+
+** Version Control
+
+- CVAT maintains annotation history
+- Revert changes if needed
+- Compare annotation versions
+- Track who made changes
+
+* Integration with CV-Project Pipeline
+
+** Workflow Integration
+
+#+BEGIN_EXAMPLE
+                +------------------+
+                |  Extract Frames  |
+                | (framer.py)      |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                |  Upload to CVAT  |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                | Annotate Objects |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                |  Export YOLO     |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                |  Augment Dataset |
+                | (augScript.py)   |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                |  Enhance Images  |
+                | (enhancer.py)    |
+                +--------+---------+
+                         |
+                         v
+                +------------------+
+                |  Train YOLOv8    |
+                +------------------+
+#+END_EXAMPLE
+
+** Custom Classes for CV-Project
+
+Recommended classes for indoor navigation:
+
+*Obstacles*:
+- person
+- chair
+- table
+- sofa
+- bed
+- cabinet
+- plant
+
+*Navigation Elements*:
+- door
+- doorway
+- stairs
+- ramp
+
+*Safety Hazards*:
+- wet_floor
+- electrical_cord
+- toys
+- clutter
+
+* Tips for Efficient Annotation
+
+** Speed Optimization
+
+1. *Use keyboard shortcuts exclusively* - 10x faster than mouse
+2. *Annotate in batches* - Similar scenes together
+3. *Use templates* - Copy boxes for repeated objects
+4. *Skip ambiguous cases* - Flag for review later
+
+** Handling Edge Cases
+
+*Reflections*: Annotate real object, not reflection
+*Shadows*: Don't annotate shadows separately
+*Parts*: Annotate whole object, not individual parts
+*Groups*: Annotate each instance separately (e.g., each chair in a row)
+
+** Quality vs Speed Trade-off
+
+- *Initial annotation*: Prioritize speed, 90% accuracy
+- *Review pass*: Focus on quality, fix mistakes
+- *Better to have more data at 90% quality than less at 100%*
+
+* Troubleshooting
+
+** Common Issues
+
+*** Images Won't Upload
+- Check file format (CVAT supports: JPG, PNG, BMP, TIFF)
+- Check file size (max depends on server config)
+- Try smaller batches
+
+*** Export File Missing Labels
+- Ensure all images marked as "Done"
+- Check label visibility settings
+- Verify export format selected correctly
+
+*** Annotations Disappear
+- Check auto-save settings (Ctrl+S frequently)
+- Verify browser didn't time out
+- Check CVAT server connection
+
+** Performance Tips
+
+- Close unnecessary browser tabs
+- Use Chrome/Firefox (best CVAT support)
+- Disable browser extensions that interfere
+- Clear browser cache if experiencing lag
+
+* Related Notes
+
+- [[id:20251016190000][CVAT Overview]] - Tool capabilities and features
+- [[id:20251016200600][Annotation Quality Guidelines]] - Quality standards
+- [[id:20251016200400][CVAT YOLO Integration]] - Export automation
+- [[id:20251016200100][YOLO Label Format]] - Understanding exported format
+- [[id:20251016200900][Annotation Tools Comparison]] - Alternative tools
+- [[id:20251016201000][Annotation and Training MOC]] - Central hub
