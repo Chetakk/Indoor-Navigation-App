@@ -1,0 +1,170 @@
+#+TITLE: TensorRT Optimization for YOLO Inference
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: tensorrt gpu optimization performance inference-acceleration
+#+RELATED: [[file:../yolo/20251015130000-yolo_architecture_fundamentals.org][YOLO Architecture Fundamentals]]
+#+RELATED: [[file:../depth/20251019110300-fp16_mixed_precision.org][FP16 Mixed Precision]]
+
+* Overview
+
+TensorRT is NVIDIA's SDK for high-performance deep learning inference that optimizes trained neural networks for production deployment on NVIDIA GPUs.
+
+* Core Concepts
+
+** What is TensorRT?
+
+TensorRT is a C++ library that performs several optimizations:
+1. Layer fusion (combining multiple operations)
+2. Precision calibration (FP32 -> FP16 -> INT8)
+3. Kernel auto-tuning (finding optimal GPU kernels)
+4. Dynamic tensor memory management
+5. Multi-stream execution
+
+** Performance Gains
+
+From TENSORRT_SETUP.md benchmarks:
+- PyTorch (.pt) on CPU: 80-160ms per image
+- PyTorch (.pt) on GPU: 30-70ms per image
+- TensorRT (.engine) FP32: 15-40ms per image
+- TensorRT (.engine) FP16: 10-25ms per image
+
+~2-4x speedup over PyTorch GPU, ~8-16x speedup over CPU!
+
+* Conversion Process
+
+** Step 1: PyTorch to ONNX
+
+#+BEGIN_SRC python
+# Intermediate ONNX export (ultralytics handles this internally)
+model = YOLO('yolov8n-oiv7.pt')
+model.export(format='onnx')  # Creates yolov8n-oiv7.onnx
+#+END_SRC
+
+** Step 2: ONNX to TensorRT Engine
+
+#+BEGIN_SRC python
+# Ultralytics YOLO can directly export to TensorRT
+model = YOLO('yolov8n-oiv7.pt')
+model.export(format='engine', half=True, imgsz=640)
+# Creates yolov8n-oiv7.engine (GPU-specific binary)
+#+END_SRC
+
+** What Happens During Conversion?
+
+1. *Graph Optimization*:
+   - Fuse Conv + BatchNorm + ReLU into single operation
+   - Remove identity operations
+   - Constant folding
+
+2. *Precision Calibration* (if FP16/INT8):
+   - Analyze activation ranges
+   - Quantize weights
+   - Insert format conversions
+
+3. *Kernel Selection*:
+   - Test different CUDA kernel implementations
+   - Profile each kernel on YOUR specific GPU
+   - Build lookup table for optimal kernels
+
+4. *Memory Planning*:
+   - Analyze tensor lifetimes
+   - Optimize memory allocation/deallocation
+   - Reduce fragmentation
+
+* FP16 Half Precision
+
+** Advantages
+1. 2x faster inference (uses Tensor Cores on RTX GPUs)
+2. 50% less memory usage
+3. 2x more data fits in GPU cache
+4. Minimal accuracy loss (<1% mAP for YOLO)
+
+** How it Works
+- RTX GPUs have specialized Tensor Cores for FP16 matrix math
+- Each Tensor Core can perform 256 FP16 operations per clock
+- Regular CUDA cores do 2 FP32 ops per clock
+- ~128x throughput advantage for matrix operations!
+
+** Trade-offs
+- Reduced numerical precision (16-bit vs 32-bit)
+- Potential for overflow/underflow (mitigated by mixed precision)
+- Not all layers benefit equally (some remain FP32)
+
+* Engine File Characteristics
+
+** GPU-Specific Binary
+- Engine files are compiled for YOUR specific GPU architecture
+- Cannot transfer between different GPU models
+- Must rebuild on each deployment target
+- Contains optimized CUDA kernels for that exact hardware
+
+** Size Comparison
+| Model | PyTorch .pt | TensorRT .engine |
+|-------|------------|------------------|
+| YOLOv8n | 6 MB | ~12 MB |
+| YOLOv8s | 22 MB | ~44 MB |
+| YOLOv8m | 52 MB | ~104 MB |
+| YOLOv8x | 136 MB | ~272 MB |
+
+Engines are ~2x larger due to embedded optimization metadata.
+
+* Integration in CV Project
+
+** Loading in Python
+
+#+BEGIN_SRC python
+from ultralytics import YOLO
+
+# Load TensorRT engine
+model = YOLO('yolov8n-oiv7.engine')
+
+# Inference (automatically uses TensorRT)
+results = model.predict(image, device='cuda')
+#+END_SRC
+
+** Configuration (app/config.py)
+
+#+BEGIN_SRC python
+MODEL_PATH = 'yolov8n-oiv7.engine'
+FORCE_CPU = False  # Must use GPU for .engine files
+#+END_SRC
+
+** First Inference Warm-up
+- First inference is slower (~500ms) due to CUDA context initialization
+- Subsequent inferences are fast (~10-20ms)
+- Project handles this with warm-up prediction in yolo_detector.py
+
+* Limitations & Considerations
+
+1. *Fixed Input Size*: Engine is optimized for specific image dimensions (640x640)
+2. *No Dynamic Batching*: Batch size is fixed at conversion time
+3. *GPU Lock-in*: Engine only works on NVIDIA GPUs
+4. *Version Compatibility*: May need to rebuild for new TensorRT versions
+5. *First-time Cost*: Conversion takes 5-15 minutes
+
+* Performance Tuning Tips
+
+** For Real-time Applications (Our Use Case)
+1. Use YOLOv8n (nano) model - smallest, fastest
+2. Enable FP16 with --half flag
+3. Match input size: 640x640 (default)
+4. Warm up model with dummy prediction
+5. Use async processing to avoid blocking
+
+** From timingConfig.js
+With 12ms TensorRT inference:
+- Detection loop interval: 150ms (was 300ms)
+- Achieves ~6-7 FPS (was 3-4 FPS)
+- Enables true real-time blind navigation
+
+* References
+- TENSORRT_SETUP.md - Setup guide
+- convert_to_tensorrt.py - Conversion script
+- benchmark_tensorrt.py - Performance testing
+- [[file:../yolo/20251015130000-yolo_architecture_fundamentals.org][YOLO Architecture]]
+- [[file:../depth/20251019110300-fp16_mixed_precision.org][FP16 Mixed Precision]]
+
+* Footnotes
+
+[fn:1] Tensor Cores: Specialized hardware units on RTX GPUs (Turing/Ampere/Ada architectures) designed for mixed-precision matrix multiply-accumulate operations.
+
+[fn:2] Kernel Auto-tuning: TensorRT tests multiple CUDA kernel implementations for each layer and profiles them on your GPU to find the fastest variant.

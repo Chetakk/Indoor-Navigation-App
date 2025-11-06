@@ -258,9 +258,10 @@ export function drawDetections(detections) {
             });
         }
 
-        // Get distance and direction info
+        // Get distance and direction info (with real depth!)
+        const depthData = { distance: detection.distance, distance_confidence: detection.distance_confidence, distance_method: detection.distance_method };
         const distanceInfo = estimateDistance(detection.bbox, detection.class_name,
-                                            video.videoWidth || 640, video.videoHeight || 480);
+                                            video.videoWidth || 640, video.videoHeight || 480, depthData);
 
         // Scale coordinates to canvas size
         const scaleX = canvas.width / (video.videoWidth || 640);
@@ -314,11 +315,28 @@ export function drawDetections(detections) {
         ctx.strokeRect(scaledX, scaledY, scaledWidth, scaledHeight);
         ctx.fillRect(scaledX, scaledY, scaledWidth, scaledHeight);
 
-        // Enhanced labels with direction and tracking
+        // Enhanced labels with direction and tracking + DEPTH DEBUG INFO
         const confidence = (detection.confidence * 100).toFixed(1);
         const trackLabel = detection.track_id !== null ? `ID: ${detection.track_id}` : '';
         const label = `${detection.class_name} ${confidence}%`;
-        const distanceLabel = `${distanceInfo.distance}`;
+
+        // ENHANCED: Show real depth distance with debug info
+        let distanceLabel = `${distanceInfo.distance}`;
+        if (distanceInfo.usingRealDepth && distanceInfo.distanceMeters !== null) {
+            // Show real meters + method + confidence
+            const methodIcon = {
+                'motion_calibrated': '🚶', // Motion-based calibration (NO HEIGHT ASSUMPTIONS!)
+                'depth_calibrated': '📏',  // Using depth + pinhole
+                'pinhole': '📐',           // Pinhole only
+                'bbox_fallback': '📦'      // Old bbox method
+            }[distanceInfo.depthMethod] || '❓';
+
+            distanceLabel = `${methodIcon} ${distanceInfo.distanceMeters.toFixed(1)}m (${(distanceInfo.depthConfidence * 100).toFixed(0)}%)`;
+        } else {
+            // Fallback bbox-based estimate
+            distanceLabel = `📦 ${distanceInfo.distance} (bbox)`;
+        }
+
         const directionLabel = `Direction: ${distanceInfo.direction}`;
 
         // Add movement info if available
@@ -670,7 +688,8 @@ export function updateRealtimeDetections(detections) {
 
                 const imageWidth = canvas ? canvas.width : 640;
                 const imageHeight = canvas ? canvas.height : 480;
-                const distanceInfo = estimateDistance(closestDetection.bbox, className, imageWidth, imageHeight);
+                const depthData = { distance: closestDetection.distance, distance_confidence: closestDetection.distance_confidence, distance_method: closestDetection.distance_method };
+                const distanceInfo = estimateDistance(closestDetection.bbox, className, imageWidth, imageHeight, depthData);
 
                 const item = document.createElement('div');
                 item.className = 'detection-item';
@@ -690,6 +709,31 @@ export function updateRealtimeDetections(detections) {
                     ) :
                     '❌ TRUE Gyro: Disabled';
 
+                // ENHANCED: Format distance with depth debug info
+                let distanceDisplay = distanceInfo.distance;
+                let distanceColor = 'var(--text-secondary)';
+                let depthMethodDisplay = '';
+
+                if (distanceInfo.usingRealDepth && distanceInfo.distanceMeters !== null) {
+                    // Using real depth estimation!
+                    const methodIcon = {
+                        'motion_calibrated': '🚶', // Motion-based (NO height assumptions!)
+                        'depth_calibrated': '📏',
+                        'pinhole': '📐',
+                        'bbox_fallback': '📦'
+                    }[distanceInfo.depthMethod] || '❓';
+
+                    distanceDisplay = `${methodIcon} ${distanceInfo.distanceMeters.toFixed(1)} meters`;
+                    distanceColor = '#10b981'; // Green for real depth
+                    depthMethodDisplay = `<div style="color: #6366f1; font-size: 0.75rem; margin-top: 2px;">
+                        Method: ${distanceInfo.depthMethod} (${(distanceInfo.depthConfidence * 100).toFixed(0)}% confidence)
+                    </div>`;
+                } else {
+                    // Fallback bbox-based
+                    distanceDisplay = `📦 ${distanceInfo.distance} (bbox estimate)`;
+                    distanceColor = '#f59e0b'; // Orange for bbox fallback
+                }
+
                 item.innerHTML = `
                     <div class="detection-class">
                         ${count}x ${className}
@@ -700,9 +744,10 @@ export function updateRealtimeDetections(detections) {
                             ${avgConfidence > 0.8 ? '🎯' : avgConfidence > 0.6 ? '✨' : '⚡'}
                         </span>
                     </div>
-                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 4px;">
-                        Distance: ${distanceInfo.distance}
+                    <div style="color: ${distanceColor}; font-size: 0.85rem; margin-top: 4px; font-weight: 600;">
+                        Distance: ${distanceDisplay}
                     </div>
+                    ${depthMethodDisplay}
                     <div style="color: #4CAF50; font-size: 0.85rem; margin-top: 4px; font-weight: 600;">
                         📍 Direction: ${distanceInfo.direction}
                     </div>

@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Call Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f0f0f0;
+        }
+        .section {
+            background: white;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .warning { background: #fff3cd; color: #856404; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 4px;
+            background: #007bff;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:hover { background: #0056b3; }
+        button:disabled {
+            background: #6c757d;
+            cursor: not-allowed;
+        }
+        .log {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry {
+            margin: 2px 0;
+            padding: 2px 0;
+        }
+        .log-error { color: #dc3545; }
+        .log-success { color: #28a745; }
+        .log-info { color: #17a2b8; }
+    </style>
+</head>
+<body>
+    <h1>Voice Call System Test</h1>
+
+    <div class="section">
+        <h2>System Requirements</h2>
+        <div id="requirements"></div>
+    </div>
+
+    <div class="section">
+        <h2>Session Registration</h2>
+        <button onclick="registerSession()">Register Client Session</button>
+        <div id="sessionStatus" class="status info">Not registered</div>
+        <div id="sessionInfo"></div>
+    </div>
+
+    <div class="section">
+        <h2>Voice Receiver (Client Side)</h2>
+        <button onclick="startVoiceReceiver()" id="startReceiverBtn">Start Voice Receiver</button>
+        <button onclick="stopVoiceReceiver()" id="stopReceiverBtn" disabled>Stop Voice Receiver</button>
+        <div id="receiverStatus" class="status info">Stopped</div>
+        <div id="receiverInfo"></div>
+    </div>
+
+    <div class="section">
+        <h2>Voice Transmitter (Dashboard Side)</h2>
+        <button onclick="startVoiceTransmit()" id="startTransmitBtn">Start Microphone</button>
+        <button onclick="stopVoiceTransmit()" id="stopTransmitBtn" disabled>Stop Microphone</button>
+        <div id="transmitStatus" class="status info">Stopped</div>
+        <div id="transmitInfo"></div>
+    </div>
+
+    <div class="section">
+        <h2>Test Log</h2>
+        <button onclick="clearLog()">Clear Log</button>
+        <div id="log" class="log"></div>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let receiverInterval = null;
+        let mediaRecorder = null;
+        let audioStream = null;
+        let lastSequence = -1;
+        let transmitSequence = 0;
+        let audioContext = null;
+
+        function log(message, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(`[${type}]`, message);
+        }
+
+        function clearLog() {
+            document.getElementById('log').innerHTML = '';
+        }
+
+        // Check system requirements
+        async function checkRequirements() {
+            const reqDiv = document.getElementById('requirements');
+            let html = '';
+
+            // Check HTTPS
+            const isHttps = location.protocol === 'https:';
+            html += `<div class="status ${isHttps ? 'success' : 'error'}">
+                HTTPS: ${isHttps ? 'Yes' : 'No'} ${isHttps ? '✓' : '✗ (Microphone access requires HTTPS)'}
+            </div>`;
+
+            // Check MediaRecorder support
+            const hasMediaRecorder = typeof MediaRecorder !== 'undefined';
+            html += `<div class="status ${hasMediaRecorder ? 'success' : 'error'}">
+                MediaRecorder API: ${hasMediaRecorder ? 'Supported' : 'Not supported'} ${hasMediaRecorder ? '✓' : '✗'}
+            </div>`;
+
+            // Check AudioContext support
+            const hasAudioContext = typeof (window.AudioContext || window.webkitAudioContext) !== 'undefined';
+            html += `<div class="status ${hasAudioContext ? 'success' : 'error'}">
+                AudioContext API: ${hasAudioContext ? 'Supported' : 'Not supported'} ${hasAudioContext ? '✓' : '✗'}
+            </div>`;
+
+            // Check getUserMedia support
+            const hasGetUserMedia = navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+            html += `<div class="status ${hasGetUserMedia ? 'success' : 'error'}">
+                getUserMedia API: ${hasGetUserMedia ? 'Supported' : 'Not supported'} ${hasGetUserMedia ? '✓' : '✗'}
+            </div>`;
+
+            reqDiv.innerHTML = html;
+        }
+
+        // Register session
+        async function registerSession() {
+            try {
+                log('Registering client session...', 'info');
+                const response = await fetch('/client/register_session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ camera_name: 'Test Camera' })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    sessionId = data.camera_id;
+                    document.getElementById('sessionStatus').className = 'status success';
+                    document.getElementById('sessionStatus').textContent = 'Registered successfully';
+                    document.getElementById('sessionInfo').innerHTML = `<strong>Camera ID:</strong> ${sessionId}`;
+                    log(`Session registered: ${sessionId}`, 'success');
+                } else {
+                    document.getElementById('sessionStatus').className = 'status error';
+                    document.getElementById('sessionStatus').textContent = 'Registration failed: ' + data.error;
+                    log(`Registration failed: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                document.getElementById('sessionStatus').className = 'status error';
+                document.getElementById('sessionStatus').textContent = 'Error: ' + error.message;
+                log(`Registration error: ${error.message}`, 'error');
+            }
+        }
+
+        // Start voice receiver (polls for audio chunks)
+        async function startVoiceReceiver() {
+            if (!sessionId) {
+                alert('Please register session first');
+                return;
+            }
+
+            try {
+                // Initialize AudioContext
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                log('Starting voice receiver...', 'info');
+                document.getElementById('receiverStatus').className = 'status success';
+                document.getElementById('receiverStatus').textContent = 'Active - Polling every 100ms';
+                document.getElementById('startReceiverBtn').disabled = true;
+                document.getElementById('stopReceiverBtn').disabled = false;
+
+                // Poll for audio chunks
+                receiverInterval = setInterval(async () => {
+                    try {
+                        const response = await fetch(`/client/voice/chunks?last_sequence=${lastSequence}`);
+                        const data = await response.json();
+
+                        if (data.success && data.chunks && data.chunks.length > 0) {
+                            log(`Received ${data.chunks.length} audio chunks`, 'success');
+                            document.getElementById('receiverInfo').innerHTML =
+                                `<strong>Chunks received:</strong> ${data.chunks.length}<br>` +
+                                `<strong>Voice session active:</strong> ${data.voice_session_active}`;
+
+                            for (const chunk of data.chunks) {
+                                await playAudioChunk(chunk.data);
+                                lastSequence = Math.max(lastSequence, chunk.sequence);
+                            }
+                        }
+                    } catch (error) {
+                        log(`Polling error: ${error.message}`, 'error');
+                    }
+                }, 100);
+
+                log('Voice receiver started', 'success');
+            } catch (error) {
+                log(`Failed to start receiver: ${error.message}`, 'error');
+            }
+        }
+
+        // Stop voice receiver
+        function stopVoiceReceiver() {
+            if (receiverInterval) {
+                clearInterval(receiverInterval);
+                receiverInterval = null;
+            }
+            document.getElementById('receiverStatus').className = 'status info';
+            document.getElementById('receiverStatus').textContent = 'Stopped';
+            document.getElementById('startReceiverBtn').disabled = false;
+            document.getElementById('stopReceiverBtn').disabled = true;
+            log('Voice receiver stopped', 'info');
+        }
+
+        // Play audio chunk
+        async function playAudioChunk(base64Audio) {
+            try {
+                const binaryString = atob(base64Audio);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                const audioBuffer = await audioContext.decodeAudioData(bytes.buffer);
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                source.start(0);
+
+                log('Playing audio chunk', 'success');
+            } catch (error) {
+                log(`Audio playback error: ${error.message}`, 'error');
+            }
+        }
+
+        // Start voice transmit (captures microphone and sends to server)
+        async function startVoiceTransmit() {
+            if (!sessionId) {
+                alert('Please register session first');
+                return;
+            }
+
+            try {
+                log('Requesting microphone access...', 'info');
+
+                // Request microphone
+                audioStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 48000
+                    }
+                });
+
+                log('Microphone access granted', 'success');
+
+                // Start voice session on server
+                const startResponse = await fetch(`/admin/cameras/${sessionId}/voice/start`, {
+                    method: 'POST'
+                });
+                const startData = await startResponse.json();
+
+                if (!startData.success) {
+                    throw new Error(startData.error || 'Failed to start voice session');
+                }
+
+                log('Voice session started on server', 'success');
+
+                // Setup MediaRecorder
+                const mimeType = 'audio/webm;codecs=opus';
+                mediaRecorder = new MediaRecorder(audioStream, { mimeType });
+                transmitSequence = 0;
+
+                mediaRecorder.ondataavailable = async (event) => {
+                    if (event.data && event.data.size > 0) {
+                        await sendAudioChunk(event.data);
+                    }
+                };
+
+                mediaRecorder.start(200); // 200ms chunks
+
+                document.getElementById('transmitStatus').className = 'status success';
+                document.getElementById('transmitStatus').textContent = 'Recording and transmitting';
+                document.getElementById('startTransmitBtn').disabled = true;
+                document.getElementById('stopTransmitBtn').disabled = false;
+
+                log('Voice transmitter started', 'success');
+
+            } catch (error) {
+                document.getElementById('transmitStatus').className = 'status error';
+                document.getElementById('transmitStatus').textContent = 'Error: ' + error.message;
+                log(`Failed to start transmitter: ${error.message}`, 'error');
+            }
+        }
+
+        // Send audio chunk to server
+        async function sendAudioChunk(audioBlob) {
+            try {
+                const base64Audio = await blobToBase64(audioBlob);
+
+                const response = await fetch(`/admin/cameras/${sessionId}/voice/chunk`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        audio: base64Audio,
+                        sequence: transmitSequence
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    document.getElementById('transmitInfo').innerHTML =
+                        `<strong>Chunks sent:</strong> ${transmitSequence + 1}<br>` +
+                        `<strong>Queue length:</strong> ${data.queue_length}`;
+                    log(`Chunk ${transmitSequence} sent (queue: ${data.queue_length})`, 'success');
+                    transmitSequence++;
+                } else {
+                    log(`Failed to send chunk: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                log(`Send error: ${error.message}`, 'error');
+            }
+        }
+
+        // Convert blob to base64
+        function blobToBase64(blob) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
+        }
+
+        // Stop voice transmit
+        async function stopVoiceTransmit() {
+            try {
+                if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                    mediaRecorder.stop();
+                }
+
+                if (audioStream) {
+                    audioStream.getTracks().forEach(track => track.stop());
+                }
+
+                // Stop voice session on server
+                if (sessionId) {
+                    await fetch(`/admin/cameras/${sessionId}/voice/stop`, {
+                        method: 'POST'
+                    });
+                }
+
+                document.getElementById('transmitStatus').className = 'status info';
+                document.getElementById('transmitStatus').textContent = 'Stopped';
+                document.getElementById('startTransmitBtn').disabled = false;
+                document.getElementById('stopTransmitBtn').disabled = true;
+
+                log('Voice transmitter stopped', 'info');
+            } catch (error) {
+                log(`Stop error: ${error.message}`, 'error');
+            }
+        }
+
+        // Initialize
+        checkRequirements();
+        log('Voice call test page loaded', 'info');
+    </script>
+</body>
+</html>

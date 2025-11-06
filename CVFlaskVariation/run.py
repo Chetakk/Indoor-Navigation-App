@@ -13,17 +13,46 @@ Environment Variables:
 """
 
 import os
+import signal
+import sys
 from app import create_app, log_startup_info
 
 # Create the Flask application
 app = create_app()
 
+
+def cleanup_and_exit(signum=None, frame=None):
+    """Gracefully cleanup resources before exit."""
+    print("\n\nShutting down server...")
+    print("Cleaning up GPU resources...")
+
+    try:
+        # Import here to avoid circular imports
+        from app.services.depth_estimator import _depth_estimator
+
+        # Cleanup depth estimator if it exists
+        if _depth_estimator is not None:
+            print("Stopping async depth worker...")
+            _depth_estimator.cleanup()
+            print("Depth estimator cleaned up successfully")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+    print("Shutdown complete")
+    sys.exit(0)
+
+
 if __name__ == '__main__':
+    # Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, cleanup_and_exit)  # Ctrl+C
+    signal.signal(signal.SIGTERM, cleanup_and_exit)  # kill command
+
     # Log startup information
     log_startup_info(app)
 
     # Get configuration from app config
-    host = app.config.get('HOST', '10.190.36.242')
+    host = app.config.get('HOST', '10.20.95.214')
+    # host = app.config.get('HOST', '10.242.173.242')
     port = app.config.get('PORT', 5000)
     debug = app.config.get('DEBUG', False)
     use_ssl = app.config.get('USE_SSL', True)

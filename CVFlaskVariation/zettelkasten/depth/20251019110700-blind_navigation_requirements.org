@@ -1,0 +1,213 @@
+:PROPERTIES:
+:ID:       20251019110700-blind_navigation_requirements
+:ROAM_ALIASES: "Blind Navigation" "Accessibility Requirements" "Real-Time Requirements"
+:END:
+#+title: Blind Navigation Requirements
+#+filetags: :application:requirements:accessibility:
+
+* Purpose
+
+This system is designed specifically for *visually impaired individuals* to navigate indoor environments safely and independently using smartphone cameras and audio feedback.
+
+This fundamentally shapes all technical decisions.
+
+* Critical Requirements
+
+** 1. Real-Time Performance (<15ms latency)
+
+*Why*: Blind users cannot see approaching obstacles
+- Need immediate warnings for collision avoidance
+- Delayed feedback = dangerous situations
+- Target: <15ms total pipeline latency
+- Current achievement: 12-20ms ✓
+
+** 2. Accurate Metric Distances
+
+*Why*: Relative information is not actionable
+- "Something is closer" - not helpful
+- "Person 2 meters ahead, slightly left" - actionable
+- Need real meters, not arbitrary units
+- Our solution: Auto-calibration + motion calibration
+
+** 3. Robust to Failures
+
+*Why*: Users cannot visually debug errors
+- System must always provide *some* guidance
+- Fallback hierarchy critical [[file:050-distance-fallback-hierarchy.org][(see note 050)]]
+- Never return "None" without alternative
+- Graceful degradation over hard failures
+
+** 4. Accessible Interface
+
+*Why*: Users cannot see screen
+- Audio feedback only (text-to-speech)
+- Voice commands for control
+- Spatial audio for directional cues
+- Simple, clear language
+
+** 5. Battery Efficient
+
+*Why*: Smartphone deployment
+- Must run for hours on battery
+- GPU acceleration helps (lower latency = less processing)
+- Async processing reduces CPU load
+- FP16 uses less power than FP32
+
+* Performance Constraints
+
+** Latency Budget Breakdown
+
+| Component         | Time (ms) | Blocking? | Critical? |
+|-------------------+-----------+-----------+-----------|
+| YOLO Detection    |      7-10 | Yes       | Yes       |
+| DeepSORT Tracking |     10-15 | Yes       | Yes       |
+| Depth Estimation  |        14 | No (async)| No        |
+| Depth Cache       |        <1 | Yes       | Yes       |
+| Pathfinding       |       2-5 | Yes       | Yes       |
+| Audio Synthesis   |      5-10 | No (async)| No        |
+|-------------------+-----------+-----------+-----------|
+| *Total (blocking)*| *17-20ms* | -         | -         |
+
+Target: <15ms for critical path (detection -> navigation)
+Current: 17-20ms (close, but acceptable)
+
+** Why <15ms?
+
+Human reaction time: ~250ms
+Walking speed: ~1.4 m/s (5 km/h)
+
+At 15ms latency with 30 FPS:
+- System updates every 33ms (30 FPS)
+- Processing adds 15ms
+- Total delay: 48ms
+- Distance traveled: 1.4 m/s * 0.048s = 6.7cm
+
+Acceptable safety margin!
+
+* Accuracy Requirements
+
+** Distance Accuracy
+- ±20% error acceptable for navigation
+- ±10% preferred for collision avoidance
+- Absolute errors <50cm critical within 2m range
+
+Example:
+- True distance: 2.0m
+- Acceptable: 1.6m - 2.4m
+- Critical if <1.5m (too close, unsafe)
+
+** Detection Confidence
+- Minimum 60% confidence for announcements
+- 70%+ for collision warnings
+- High-confidence filter reduces false alarms
+
+** Spatial Resolution
+- Divide frame into 3 zones: left, center, right
+- Vertical: top (head level), middle (torso), bottom (ground)
+- 9 spatial regions total
+
+* Failure Modes to Avoid
+
+** 1. Silent Failures
+*Bad*: System crashes, no audio
+*Solution*: Exception handling, fallback responses
+
+** 2. False Negatives
+*Bad*: Miss obstacle -> user collision
+*Solution*: Prefer false positives, redundant checks
+
+** 3. Overwhelming Feedback
+*Bad*: Announce every detection -> information overload
+*Solution*: Priority filtering, announcement delays
+
+** 4. Inconsistent Distances
+*Bad*: "2m... 5m... 1m" for same object
+*Solution*: Temporal smoothing, confidence thresholds
+
+* Design Decisions Driven by Requirements
+
+** Why Async Depth? [[id:20251019110500-async_processing][Async Processing]]
+- Main pipeline must be <15ms
+- Depth is slow (14ms) but not critical for immediate response
+- Slightly stale depth (1-2 frames) acceptable
+- Async keeps main pipeline fast
+
+** Why FP16? [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]]
+- 3.82x faster inference
+- Enables real-time processing
+- Lower power consumption
+- No accuracy loss for navigation
+
+** Why Auto-Calibration? [[id:20251019110600-auto_calibration][Auto Calibration]]
+- Manual calibration not accessible to blind users
+- Must work out-of-box with zero setup
+- Automatically learns from environment
+- No visual feedback needed
+
+* User Experience Flow
+
+1. *Startup*
+   - App opens with voice greeting
+   - Auto-starts detection (no button needed)
+   - Camera feed begins
+
+2. *Walking*
+   - System detects objects continuously
+   - Announces high-priority items
+   - "Person 3 meters ahead"
+   - "Door on your right"
+
+3. *Collision Warning*
+   - Fast-moving object detected
+   - Immediate audio alert: "DANGER! Stop!"
+   - Distance + direction provided
+
+4. *Navigation*
+   - User can request path to goal
+   - System provides turn-by-turn guidance
+   - "Walk forward 5 meters, then turn left"
+
+* Accessibility Features
+
+** Audio Feedback
+- Text-to-speech for all announcements
+- Configurable speech rate (0.5x - 2.0x)
+- Spatial audio for directional cues
+- Distinct tones for warnings
+
+** Voice Commands
+- "What's ahead?"
+- "Find door"
+- "Stop announcements"
+- "Repeat last message"
+
+** Auto-Start Mode
+- Detection begins immediately on launch
+- No visual interface needed
+- All features accessible via voice
+
+* Testing with Blind Users
+
+Critical considerations:
+1. Cannot ask them to "look at screen"
+2. Cannot show debug info visually
+3. Must rely entirely on audio feedback
+4. Safety is paramount - no risky experiments
+5. Feedback must be clear and actionable
+
+* Related Notes
+
+- [[id:20251019110500-async_processing][Async Processing]] - Keeping latency low
+- [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]] - Speed optimization
+- [[id:20251019110600-auto_calibration][Auto Calibration]] - Zero-setup calibration
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - Core depth model
+
+* Implementation
+
+System configuration in [[file:../app/config.py][config.py:39-53]]
+
+* References
+
+- WHO Visual Impairment: https://www.who.int/news-room/fact-sheets/detail/blindness-and-visual-impairment
+- Assistive Technology: https://en.wikipedia.org/wiki/Assistive_technology
+- Accessible Design: https://www.w3.org/WAI/fundamentals/accessibility-intro/

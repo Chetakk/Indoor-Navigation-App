@@ -1,5 +1,10 @@
 """
 Collision detection and movement prediction service.
+
+IMPROVEMENTS (2025-10-19):
+- Added graceful handling of None/invalid distances
+- Uses bbox-based fallback when depth unavailable
+- Only triggers high-confidence warnings for validated distances
 """
 
 import numpy as np

@@ -1,0 +1,382 @@
+#+TITLE: Camera Registry System - Multi-Client Architecture
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: architecture multi-client registry websockets flask dashboard
+#+RELATED: [[file:../codebase/20251015110900-cv_project_index.org][CV Project Index]]
+
+* Overview
+
+The Camera Registry System manages multiple connected camera clients (mobile phones, webcams, etc.) in a centralized server architecture. Enables remote monitoring, statistics tracking, and multi-camera dashboard viewing.
+
+* Architecture Pattern
+
+** Singleton Registry
+
+#+BEGIN_SRC python
+# Global registry instance (singleton pattern)
+_registry = None
+
+def get_camera_registry() -> CameraRegistry:
+    global _registry
+    if _registry is None:
+        _registry = CameraRegistry()
+    return _registry
+#+END_SRC
+
+Benefits:
+1. Single source of truth for all cameras
+2. Thread-safe access across Flask workers
+3. Centralized lifecycle management
+4. Easy statistics aggregation
+
+** Client-Server Model
+
+#+BEGIN_EXAMPLE
+[Mobile Phone 1] --HTTP--> [Flask Server] <--Registry--> [Dashboard]
+[Mobile Phone 2] --HTTP--> [Flask Server] <--Registry--> [Dashboard]
+[Tablet] --------HTTP--> [Flask Server] <--Registry--> [Dashboard]
+#+END_EXAMPLE
+
+*Key Components:*
+1. *Camera Client*: Individual device (phone/webcam)
+2. *Registry*: Central management service
+3. *Dashboard*: Monitoring interface
+4. *REST API*: Communication layer
+
+* Camera Client Model
+
+** Client Metadata
+
+#+BEGIN_SRC python
+class CameraClient:
+    def __init__(self, camera_id, client_info):
+        # Identity
+        self.camera_id = camera_id or str(uuid.uuid4())
+        self.camera_name = f'Camera {camera_id[:8]}'
+
+        # Connection tracking
+        self.connected_at = time.time()
+        self.last_heartbeat = time.time()
+        self.status = 'online'  # online, offline
+
+        # Client info
+        self.user_agent = client_info.get('user_agent')
+        self.ip_address = client_info.get('ip')
+
+        # State
+        self.detection_active = False
+        self.audio_enabled = False
+        self.pathfinding_enabled = False
+        self.dashboard_streaming_enabled = True
+
+        # Statistics
+        self.total_detections = 0
+        self.total_frames = 0
+        self.current_fps = 0
+#+END_SRC
+
+** Heartbeat Mechanism
+
+Clients send periodic heartbeats to indicate they're alive:
+
+#+BEGIN_SRC python
+def update_heartbeat(self):
+    self.last_heartbeat = time.time()
+    if self.status == 'offline':
+        self.status = 'online'
+        logger.info(f"Camera {self.camera_id} back online")
+
+def is_stale(self, timeout=30):
+    """Check if camera hasn't sent heartbeat within timeout."""
+    return (time.time() - self.last_heartbeat) > timeout
+#+END_SRC
+
+*Timeout Strategy:*
+- Default timeout: 30 seconds
+- Stale cameras marked as 'offline'
+- Not removed immediately (allows reconnection)
+- Periodic cleanup task checks for stale cameras
+
+* Registry Operations
+
+** Camera Registration
+
+#+BEGIN_SRC python
+def register_camera(self, camera_id=None, client_info=None):
+    if camera_id and camera_id in self.cameras:
+        # Existing camera reconnecting
+        camera = self.cameras[camera_id]
+        camera.update_heartbeat()
+        return camera
+
+    # New camera
+    camera = CameraClient(camera_id=camera_id, client_info=client_info)
+    self.cameras[camera.camera_id] = camera
+    logger.info(f"New camera registered: {camera.camera_id}")
+    return camera
+#+END_SRC
+
+** State Updates
+
+Cameras push state updates with each frame:
+
+#+BEGIN_SRC python
+def update_camera_state(self, camera_id, state_data):
+    camera = self.get_camera(camera_id)
+    if camera:
+        camera.update_state(state_data)
+        return True
+    return False
+#+END_SRC
+
+State data includes:
+- Detection status (active/inactive)
+- Audio status (enabled/disabled)
+- Pathfinding status
+- FPS statistics
+- Battery level (mobile devices)
+- Location (if geolocation enabled)
+
+** Frame Streaming
+
+For dashboard streaming:
+
+#+BEGIN_SRC python
+def update_frame(self, frame_data: str):
+    """Store latest frame as base64 JPEG."""
+    self.latest_frame = frame_data
+    self.frame_timestamp = time.time()
+
+def get_latest_frame(self) -> Optional[str]:
+    """Return None if frame is too old (>2 seconds)."""
+    if self.frame_timestamp and (time.time() - self.frame_timestamp) > 2:
+        return None
+    return self.latest_frame
+#+END_SRC
+
+*Design Decision:* Only store latest frame (not queue)
+- Reduces memory usage
+- Dashboard always shows current state
+- Old frames automatically expire
+
+* Dashboard Integration
+
+** Camera List Endpoint
+
+#+BEGIN_SRC python
+@cameras_bp.route('/list')
+def list_cameras():
+    registry = get_camera_registry()
+    registry.cleanup_stale_cameras()
+
+    stats = registry.get_statistics()
+    return jsonify(stats)
+#+END_SRC
+
+Returns:
+#+BEGIN_SRC json
+{
+    "total_cameras": 3,
+    "online_cameras": 2,
+    "offline_cameras": 1,
+    "total_detections": 1543,
+    "total_frames": 8921,
+    "cameras": [
+        {
+            "camera_id": "abc123...",
+            "camera_name": "Camera abc123",
+            "status": "online",
+            "uptime_formatted": "2h 34m 12s",
+            "current_fps": 6.2,
+            "total_detections": 542,
+            "battery_level": 78,
+            "is_charging": false
+        }
+    ]
+}
+#+END_SRC
+
+** Live Frame Streaming
+
+#+BEGIN_SRC python
+@cameras_bp.route('/<camera_id>/stream')
+def stream_camera(camera_id):
+    camera = registry.get_camera(camera_id)
+    if not camera:
+        return jsonify({'error': 'Camera not found'}), 404
+
+    frame = camera.get_latest_frame()
+    if not frame:
+        return jsonify({'error': 'No recent frame'}), 404
+
+    return jsonify({
+        'frame': frame,  # base64 JPEG
+        'timestamp': camera.frame_timestamp
+    })
+#+END_SRC
+
+Frontend polls this endpoint for each camera:
+#+BEGIN_SRC javascript
+setInterval(() => {
+    fetch(`/admin/cameras/${cameraId}/stream`)
+        .then(r => r.json())
+        .then(data => {
+            videoElement.src = `data:image/jpeg;base64,${data.frame}`;
+        });
+}, 500);  // 2 FPS dashboard stream
+#+END_SRC
+
+* Statistics Aggregation
+
+** Registry-Wide Statistics
+
+#+BEGIN_SRC python
+def get_statistics(self):
+    all_cameras = self.get_all_cameras()
+    online_cameras = self.get_online_cameras()
+
+    total_detections = sum(cam.total_detections for cam in all_cameras)
+    total_frames = sum(cam.total_frames for cam in all_cameras)
+
+    return {
+        'total_cameras': len(all_cameras),
+        'online_cameras': len(online_cameras),
+        'offline_cameras': len(all_cameras) - len(online_cameras),
+        'total_detections': total_detections,
+        'total_frames': total_frames,
+        'cameras': [cam.to_dict() for cam in all_cameras]
+    }
+#+END_SRC
+
+** Per-Camera Statistics
+
+Each camera tracks:
+- Uptime (formatted as "2h 34m 12s")
+- Total frames processed
+- Total objects detected
+- Current FPS
+- Battery level (if mobile)
+- Connection quality
+
+* Mobile Device Features
+
+** Battery Monitoring
+
+#+BEGIN_SRC javascript
+// Frontend sends battery info with state updates
+navigator.getBattery().then(battery => {
+    stateData.battery_level = battery.level * 100;
+    stateData.is_charging = battery.charging;
+});
+#+END_SRC
+
+Backend stores and displays:
+- Battery percentage (0-100)
+- Charging status (true/false)
+- Warns when battery < 20%
+
+** Geolocation Tracking
+
+#+BEGIN_SRC javascript
+// Optional geolocation (user must enable)
+navigator.geolocation.getCurrentPosition(pos => {
+    stateData.latitude = pos.coords.latitude;
+    stateData.longitude = pos.coords.longitude;
+});
+#+END_SRC
+
+Use cases:
+- Multi-camera deployment tracking
+- Geographic statistics
+- Location-based alerts
+
+* Thread Safety Considerations
+
+** Concurrent Access
+
+Flask runs with multiple workers/threads:
+- Multiple cameras updating simultaneously
+- Dashboard polling registry
+- Cleanup tasks running
+
+*No explicit locking in current implementation!*
+
+Potential race conditions:
+1. Dictionary modification during iteration
+2. Concurrent state updates to same camera
+3. Stale camera cleanup during registration
+
+** Future Enhancement
+
+Add threading locks:
+#+BEGIN_SRC python
+import threading
+
+class CameraRegistry:
+    def __init__(self):
+        self.cameras = {}
+        self._lock = threading.Lock()
+
+    def register_camera(self, camera_id, client_info):
+        with self._lock:
+            # Thread-safe registration
+            ...
+#+END_SRC
+
+* Scalability Considerations
+
+** Current Limitations
+
+1. *In-memory storage*: Registry data lost on server restart
+2. *Single server*: No horizontal scaling
+3. *Polling-based*: Dashboard polls every 500ms (wasteful)
+4. *No persistence*: Camera history not saved
+
+** Potential Improvements
+
+1. *Redis Backend*: Store registry in Redis for persistence
+2. *WebSockets*: Push updates instead of polling
+3. *Database*: Store camera history, statistics over time
+4. *Load Balancer*: Sticky sessions for multi-server deployment
+
+* API Endpoints
+
+** Camera Management
+- POST /admin/cameras/register - Register new camera
+- POST /admin/cameras/<id>/unregister - Remove camera
+- GET /admin/cameras/list - List all cameras
+- POST /admin/cameras/<id>/state - Update camera state
+
+** Frame Streaming
+- POST /admin/cameras/<id>/frame - Upload frame
+- GET /admin/cameras/<id>/stream - Get latest frame
+
+** Statistics
+- GET /admin/cameras/<id>/stats - Per-camera statistics
+- GET /admin/cameras/stats - Aggregate statistics
+
+* Use Cases
+
+1. *Multi-Phone Deployment*: Multiple users sharing one dashboard
+2. *Remote Monitoring*: Monitor blind navigation from afar
+3. *Performance Analysis*: Compare FPS across devices
+4. *Debugging*: View multiple camera streams simultaneously
+5. *Research*: Collect statistics from multiple sessions
+
+* Implementation Files
+
+- app/services/camera_registry.py - Registry implementation
+- app/routes/cameras.py - REST API endpoints
+- app/routes/dashboard.py - Dashboard UI
+- app/static/js/modules/dashboard.js - Frontend polling
+
+* References
+- [[file:../codebase/20251015110900-cv_project_index.org][CV Project Index]]
+- [[file:20251022110300-server_monitoring.org][Server Monitoring]]
+
+* Footnotes
+
+[fn:1] Singleton Pattern: Design pattern ensuring only one instance of a class exists globally. Useful for shared resources like registries, connection pools.
+
+[fn:2] Heartbeat Mechanism: Periodic "keep-alive" signals sent by clients to indicate they are still active. Common in distributed systems.
+
+[fn:3] Sticky Sessions: Load balancing strategy where requests from same client always route to same server. Required when server maintains session state.

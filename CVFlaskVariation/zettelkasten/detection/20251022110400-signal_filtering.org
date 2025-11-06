@@ -1,0 +1,384 @@
+#+TITLE: Signal Filtering and Detection Post-Processing
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: filtering deduplication iou blacklist post-processing
+#+RELATED: [[file:20251015130300-object_detection_paradigms.org][Object Detection Paradigms]]
+#+RELATED: [[file:../yolo/20251015130700-non_maximum_suppression.org][Non Maximum Suppression]]
+
+* Overview
+
+Signal filtering and post-processing cleans up raw detection outputs to remove noise, duplicates, and unwanted classes. Essential for production-quality object detection systems.
+
+* Filtering Pipeline
+
+** Processing Order
+
+1. *Confidence Filtering*: Remove low-confidence detections
+2. *Class Blacklisting*: Remove unwanted object classes
+3. *Class Normalization*: Map similar classes (man/woman -> person)
+4. *Deduplication*: Remove overlapping detections of same class
+5. *Distance Estimation*: Add depth/distance information
+6. *Collision Detection*: Identify potential hazards
+
+Order matters! Confidence filtering before deduplication reduces computation.
+
+* Confidence Filtering
+
+** Threshold-Based Filtering
+
+#+BEGIN_SRC python
+def filter_detections_by_confidence(detections, min_confidence=0.3):
+    """Keep only detections above confidence threshold."""
+    return [det for det in detections if det.get('confidence', 0) >= min_confidence]
+#+END_SRC
+
+*Typical Thresholds:*
+- *High Precision* (0.7-0.9): Few false positives, may miss objects
+- *Balanced* (0.3-0.5): Good trade-off for most applications
+- *High Recall* (0.1-0.3): Catch all objects, many false positives
+
+*Project Default:* 0.3 (balanced for blind navigation)
+
+** Adaptive Thresholds
+
+Better approach: Vary threshold by class
+#+BEGIN_SRC python
+CLASS_THRESHOLDS = {
+    'person': 0.25,      # Lower threshold (critical for navigation)
+    'car': 0.35,         # Medium threshold
+    'building': 0.50,    # Higher threshold (many false positives)
+}
+#+END_SRC
+
+* Class Blacklisting
+
+** Purpose
+
+Remove distracting or irrelevant object classes:
+- Indoor objects when navigating outdoors
+- Small objects unlikely to be navigation hazards
+- Classes with high false positive rates
+
+** Implementation
+
+#+BEGIN_SRC python
+# From app/constants.py
+BLACKLISTED_CLASSES = {
+    'remote', 'toothbrush', 'hairbrush', 'tennis_racket',
+    'baseball_bat', 'fork', 'knife', 'spoon', 'bowl',
+    # ... small household items
+}
+
+def is_class_blacklisted(class_name):
+    return class_name.lower() in BLACKLISTED_CLASSES
+#+END_SRC
+
+*Filtering:*
+#+BEGIN_SRC python
+detections = [det for det in detections
+              if not is_class_blacklisted(det['class_name'])]
+#+END_SRC
+
+** Dynamic Blacklisting
+
+Future enhancement: User-configurable blacklists
+#+BEGIN_SRC python
+# Indoor mode: Blacklist cars, bicycles
+# Outdoor mode: Blacklist furniture, appliances
+# Custom mode: User-defined blacklist
+#+END_SRC
+
+* Class Normalization
+
+** Purpose
+
+Map semantically similar classes to unified labels:
+- "man", "woman", "boy", "girl" -> "person"
+- "face" -> "person" (usually indicates person nearby)
+- "automobile", "sedan" -> "car"
+
+Reduces duplicate announcements: "There is a man. There is a woman." -> "There are 2 people."
+
+** Implementation
+
+#+BEGIN_SRC python
+# From app/constants.py
+CLASS_MAPPING = {
+    'man': 'person',
+    'woman': 'person',
+    'boy': 'person',
+    'girl': 'person',
+    'face': 'person',
+    # ... more mappings
+}
+
+def normalize_class_name(class_name):
+    normalized = class_name.lower()
+    return CLASS_MAPPING.get(normalized, class_name)
+#+END_SRC
+
+*Applied After Detection:*
+#+BEGIN_SRC python
+for det in detections:
+    det['class_name'] = normalize_class_name(det['class_name'])
+#+END_SRC
+
+* Deduplication via IoU
+
+** The Problem
+
+Multiple detections can fire for the same physical object:
+- YOLO detects "person" at bbox [100, 200, 300, 500]
+- YOLO detects "face" at bbox [150, 220, 250, 320]
+- After normalization: Both map to "person"
+- Same physical person, two bounding boxes!
+
+Result: Audio announces "person" twice, confusing user.
+
+** IoU-Based Deduplication
+
+*Intersection over Union (IoU):*
+#+BEGIN_SRC python
+def calculate_iou(box1, box2):
+    # Calculate intersection area
+    x_min = max(box1[0], box2[0])
+    y_min = max(box1[1], box2[1])
+    x_max = min(box1[2], box2[2])
+    y_max = min(box1[3], box2[3])
+
+    if x_max < x_min or y_max < y_min:
+        return 0.0  # No overlap
+
+    intersection = (x_max - x_min) * (y_max - y_min)
+
+    # Calculate union area
+    area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+    area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+    union = area1 + area2 - intersection
+
+    return intersection / union if union > 0 else 0.0
+#+END_SRC
+
+*Deduplication Algorithm:*
+#+BEGIN_SRC python
+def deduplicate_same_class_detections(detections, iou_threshold=0.5):
+    # Group by normalized class name
+    class_groups = {}
+    for det in detections:
+        cls = det['class_name']
+        class_groups.setdefault(cls, []).append(det)
+
+    deduplicated = []
+    for cls, group in class_groups.items():
+        # Sort by confidence (highest first)
+        group_sorted = sorted(group, key=lambda x: x['confidence'], reverse=True)
+
+        kept = []
+        for det in group_sorted:
+            # Check overlap with already-kept detections
+            should_keep = True
+            for kept_det in kept:
+                iou = calculate_iou(det['bbox_xyxy'], kept_det['bbox_xyxy'])
+                if iou > iou_threshold:
+                    # Duplicate! Skip lower-confidence detection
+                    should_keep = False
+                    break
+
+            if should_keep:
+                kept.append(det)
+
+        deduplicated.extend(kept)
+
+    return deduplicated
+#+END_SRC
+
+** IoU Threshold Selection
+
+*Trade-offs:*
+- *High IoU (0.7-0.9)*: Only removes near-identical boxes
+  - Pro: Preserves distinct objects
+  - Con: May leave duplicates
+
+- *Medium IoU (0.4-0.6)*: Balanced approach
+  - Pro: Removes most duplicates
+  - Con: May merge nearby objects
+
+- *Low IoU (0.1-0.3)*: Aggressive deduplication
+  - Pro: Ensures no duplicates
+  - Con: May incorrectly merge distinct objects
+
+*Project Default:* 0.5 (balanced)
+
+* Non-Maximum Suppression (NMS)
+
+** NMS vs. Deduplication
+
+*NMS* (built into YOLO):
+- Removes duplicate boxes for SAME class from SAME detection head
+- Applied during YOLO inference
+- Uses IoU threshold (typically 0.45-0.50)
+
+*Custom Deduplication*:
+- Removes duplicates ACROSS different classes (after normalization)
+- Applied in post-processing
+- Handles edge cases NMS doesn't (e.g., "man" + "face" -> "person")
+
+Both are necessary!
+
+** YOLO NMS Configuration
+
+#+BEGIN_SRC python
+results = model.predict(
+    image,
+    conf=0.3,        # Confidence threshold
+    iou=0.45,        # NMS IoU threshold
+    max_det=300,     # Maximum detections
+)
+#+END_SRC
+
+* Class-Specific Filtering
+
+** Allowed Classes
+
+Keep only specific classes relevant to task:
+
+#+BEGIN_SRC python
+def filter_detections_by_classes(detections, allowed_classes):
+    allowed_set = set(cls.lower() for cls in allowed_classes)
+    return [det for det in detections
+            if det.get('class_name', '').lower() in allowed_set]
+#+END_SRC
+
+Example: Navigation mode
+#+BEGIN_SRC python
+NAVIGATION_CLASSES = {
+    'person', 'bicycle', 'car', 'bus', 'truck',
+    'chair', 'table', 'door', 'stairs'
+}
+detections = filter_detections_by_classes(detections, NAVIGATION_CLASSES)
+#+END_SRC
+
+* Temporal Filtering
+
+** Problem: Flickering Detections
+
+Object appears/disappears frame-to-frame:
+- Frame 1: Detect "chair" at (100, 200)
+- Frame 2: No "chair"
+- Frame 3: Detect "chair" at (105, 202)
+
+Audio announces: "Chair approaching. Chair gone. Chair approaching."
+
+*Annoying!*
+
+** Solution: Tracking + Hysteresis
+
+Use object tracker (DeepSORT) to maintain object identity:
+#+BEGIN_SRC python
+# Track objects across frames
+tracks = tracker.update(detections)
+
+# Only announce objects that persist for N frames
+for track in tracks:
+    if track.frames_since_first_detection > 3:
+        announce(track)  # Only announce stable detections
+#+END_SRC
+
+** Hysteresis for Confidence
+
+Require different thresholds for detection vs. deletion:
+- *Detection threshold:* 0.4 (higher, prevents false positives)
+- *Deletion threshold:* 0.2 (lower, prevents flickering)
+
+Once detected, object persists even if confidence drops below 0.4, until it drops below 0.2.
+
+* Distance-Based Filtering
+
+** Range Filtering
+
+Ignore objects too far away (not immediate threat):
+
+#+BEGIN_SRC python
+def filter_by_distance(detections, max_distance=10.0):
+    """Keep only objects within max_distance meters."""
+    return [det for det in detections
+            if det.get('distance', float('inf')) <= max_distance]
+#+END_SRC
+
+*Use Cases:*
+- Navigation: Ignore objects > 10 meters
+- Collision warning: Only objects < 5 meters
+- Surveying: All objects regardless of distance
+
+** Minimum Size Filtering
+
+Filter by bounding box area (removes tiny objects):
+
+#+BEGIN_SRC python
+def filter_by_size(detections, min_area_ratio=0.01):
+    """Remove detections smaller than min_area_ratio of image."""
+    image_area = image_width * image_height
+    min_area = image_area * min_area_ratio
+
+    return [det for det in detections
+            if bbox_area(det['bbox_xyxy']) >= min_area]
+#+END_SRC
+
+*Rationale:* Very small objects are often false positives or too far to matter.
+
+* Detection Quality Metrics
+
+** Precision and Recall
+
+*Precision:* Of all detections, how many are correct?
+#+BEGIN_EXAMPLE
+Precision = True Positives / (True Positives + False Positives)
+#+END_EXAMPLE
+
+*Recall:* Of all real objects, how many did we detect?
+#+BEGIN_EXAMPLE
+Recall = True Positives / (True Positives + False Negatives)
+#+END_EXAMPLE
+
+*Trade-off:*
+- Higher confidence threshold -> Higher precision, lower recall
+- Lower confidence threshold -> Lower precision, higher recall
+
+** F1 Score
+
+Harmonic mean of precision and recall:
+#+BEGIN_EXAMPLE
+F1 = 2 * (Precision * Recall) / (Precision + Recall)
+#+END_EXAMPLE
+
+Optimal threshold maximizes F1 score for your use case.
+
+* Filter Tuning Strategy
+
+1. *Start Conservative*: High confidence (0.7), high IoU (0.7)
+2. *Measure Performance*: Count false positives and false negatives
+3. *Adjust Iteratively*:
+   - Too many false positives? Increase confidence threshold
+   - Missing objects? Decrease confidence threshold
+   - Duplicate announcements? Decrease IoU threshold
+4. *Validate on Test Set*: Don't overfit to one scenario
+5. *A/B Test*: Compare different threshold combinations
+
+* Implementation Files
+
+- app/utils/filtering.py - Filtering utilities
+- app/utils/geometry.py - IoU and geometric calculations
+- app/constants.py - Blacklists, class mappings, thresholds
+- app/services/yolo_detector.py - Integration with YOLO
+
+* References
+- [[file:20251015130300-object_detection_paradigms.org][Object Detection Paradigms]]
+- [[file:../yolo/20251015130700-non_maximum_suppression.org][Non Maximum Suppression]]
+- [[file:../codebase/20251015114700-deepsort_algorithm.org][DeepSORT Algorithm]]
+
+* Footnotes
+
+[fn:1] Hysteresis: Technique where threshold for state change depends on current state. Prevents rapid oscillation at threshold boundary.
+
+[fn:2] Greedy NMS: Iteratively select highest-confidence box, remove all overlapping boxes above IoU threshold, repeat until no boxes remain.
+
+[fn:3] Soft NMS: Instead of removing overlapping boxes, decay their confidence scores proportional to IoU. Preserves nearby objects while penalizing duplicates.

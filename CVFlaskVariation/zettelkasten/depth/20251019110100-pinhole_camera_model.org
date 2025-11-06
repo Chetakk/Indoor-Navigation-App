@@ -1,0 +1,184 @@
+:PROPERTIES:
+:ID:       20251019110100-pinhole_camera_model
+:ROAM_ALIASES: "Pinhole Model" "Camera Calibration"
+:END:
+#+title: Pinhole Camera Model
+#+filetags: :computer_vision:calibration:classical_method:
+
+* Concept
+
+The pinhole camera model is a classical geometric approach to estimate distance using simple physics: if you know an object's real-world size and can measure its size in pixels, you can calculate how far away it is.
+
+Formula: =distance = (real_height * focal_length) / pixel_height=
+
+* The Physics
+
+Imagine light rays passing through a tiny hole (pinhole):
+
+#+BEGIN_EXAMPLE
+Real Object                      Image Plane
+(height H)                       (height h)
+    |                                |
+    |         /|                     |
+    |-------/  |                     |
+    |     /    |focal_length (f)     |
+    |   /      |                     |
+    | /________|_____________________|
+   Pinhole    distance (d)
+
+Similar triangles:
+H / d = h / f
+
+Solving for distance:
+d = (H * f) / h
+#+END_EXAMPLE
+
+* Why It Works
+
+Based on similar triangles from geometry:
+- Larger objects in image -> closer
+- Smaller objects in image -> farther
+- If we know real size H, we can solve for distance d
+
+* Implementation
+
+#+BEGIN_SRC python
+def estimate_distance(bbox, class_name):
+    # Get known real-world height
+    known_height = KNOWN_OBJECT_HEIGHTS[class_name]  # meters
+
+    # Measure pixel height
+    x1, y1, x2, y2 = bbox
+    pixel_height = y2 - y1
+
+    # Apply formula
+    distance = (known_height * focal_length) / pixel_height
+
+    return distance
+#+END_SRC
+
+* Focal Length Estimation
+
+If camera intrinsics unknown, estimate from field of view:
+
+#+BEGIN_SRC python
+# Assume 60-degree horizontal FOV (typical phone camera)
+horizontal_fov = 60 * (pi / 180)  # radians
+focal_length = image_width / (2 * tan(horizontal_fov / 2))
+
+# For 640px width: f = 554 pixels
+#+END_SRC
+
+* Known Object Heights Database
+
+We maintain a database of 500+ object heights [[file:../app/constants.py][(see constants.py)]]:
+
+#+BEGIN_EXAMPLE
+'person': 1.7m      # Average human height
+'car': 1.5m         # Average car height
+'bicycle': 1.0m     # Typical bicycle height
+'desk': 0.75m       # Standard desk height
+'computer monitor': 0.5m
+...
+#+END_EXAMPLE
+
+* Accuracy Factors
+
+** Good Accuracy When:
+- Object fully visible (not occluded)
+- Object height matches average
+- Object orientation is vertical
+- Camera angle is level
+
+** Poor Accuracy When:
+- Object partially occluded
+- Object size varies (people: 1.5m - 2.0m)
+- Object tilted or lying down
+- Camera tilted (changes apparent height)
+
+* Advantages
+
+1. *Fast*: Pure mathematics, <1ms
+2. *No ML model needed*: Works without GPU
+3. *Interpretable*: Clear physical reasoning
+4. *Accurate for known objects*: When assumptions hold
+
+* Limitations
+
+1. *Requires known heights*: Only works for objects in database
+2. *Size variation*: Not all people are 1.7m tall!
+3. *Partial occlusion*: Half-visible objects give wrong heights
+4. *Orientation dependency*: Only works for vertical objects
+
+* Our Use Cases
+
+We use pinhole model for:
+
+1. *Auto-calibration bootstrapping* [[file:040-auto-calibration.org][(see note 040)]]
+   - Provides initial metric distances
+   - Used to calibrate depth model scale
+
+2. *Fallback distance estimation* [[file:050-distance-fallback-hierarchy.org][(see note 050)]]
+   - When depth model fails
+   - For known objects only
+
+3. *Confidence scoring*
+   - Cross-check depth estimates
+   - Detect outliers
+
+* Case-Sensitivity Fix
+
+Originally failed for "Computer Monitor" vs "computer monitor".
+
+Fixed with normalization:
+#+BEGIN_SRC python
+class_name_normalized = class_name.lower()
+known_height = KNOWN_OBJECT_HEIGHTS[class_name_normalized]
+#+END_SRC
+
+* Confidence Scoring
+
+We score pinhole estimates based on:
+
+1. *Bbox area* (too small/large = low confidence)
+2. *Aspect ratio* (unusual shape = low confidence)
+3. *Distance range* (too close/far = suspicious)
+
+Example:
+#+BEGIN_SRC python
+# Bbox should be 5-50% of image
+area_ratio = bbox_area / image_area
+if 0.05 <= area_ratio <= 0.5:
+    confidence = 0.8  # High
+else:
+    confidence = 0.3  # Low
+
+# Person should have aspect ratio 0.3-0.8 (taller than wide)
+if 0.3 <= aspect_ratio <= 0.8:
+    # Good!
+else:
+    confidence *= 0.7  # Penalize
+#+END_SRC
+
+* Related Notes
+
+- [[id:20251019110600-auto_calibration][Auto-Calibration]] - Uses pinhole estimates
+- [[id:20251019110000-monocular_depth_estimation][Monocular Depth Estimation]] - Modern ML approach
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - Combines with pinhole for metric depth
+
+* Implementation
+
+See =PinholeCameraModel= in [[file:../app/utils/camera_calibration.py][camera_calibration.py:13-189]]
+
+* Historical Context
+
+Pinhole cameras date back to ancient China (5th century BC)!
+- First camera obscura documented by Mozi
+- Leonardo da Vinci studied pinhole optics (1502)
+- Used in photography before lenses invented
+
+* References
+
+- Pinhole camera: https://en.wikipedia.org/wiki/Pinhole_camera
+- Similar triangles: https://en.wikipedia.org/wiki/Similarity_(geometry)
+- Camera calibration: https://docs.opencv.org/4.x/dc/dbb/tutorial_py_calibration.html

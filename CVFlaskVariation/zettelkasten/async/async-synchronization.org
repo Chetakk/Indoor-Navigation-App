@@ -1,0 +1,643 @@
+#+TITLE: Async Synchronization Mechanisms
+#+AUTHOR: CV-Project Documentation
+#+DATE: 2025-10-19
+
+* Overview
+
+This document catalogs all synchronization mechanisms used across the CV-Project to prevent race conditions, data corruption, and stale data processing in the async architecture.
+
+* Backend Synchronization (Python)
+
+** threading.Lock()
+
+*** Purpose
+    Mutual exclusion for shared state access between threads.
+
+*** Usage Pattern
+    #+BEGIN_SRC python
+    import threading
+
+    class ThreadSafeCache:
+        def __init__(self):
+            self.data = None
+            self.lock = threading.Lock()
+
+        def set(self, value):
+            with self.lock:  # Acquire lock, auto-release on exit
+                self.data = value
+
+        def get(self):
+            with self.lock:
+                return self.data
+    #+END_SRC
+
+*** Locations in Codebase
+
+| Class           | File                           | Line | Protected Data        |
+|-----------------+--------------------------------+------+-----------------------|
+| DepthMapCache   | app/services/depth_estimator.py | 105  | depth_map, timestamp  |
+| AutoCalibrator  | app/services/depth_estimator.py | 145  | scales (deque)        |
+| AsyncDepthWorker | app/services/depth_estimator.py | 240  | image_queue (deque)   |
+
+*** Key Rules
+    1. *Always use context manager* (=with self.lock:=) to ensure lock is released
+    2. *Never call locked method from locked method* (deadlock risk)
+    3. *Keep critical section small* (minimize time holding lock)
+    4. *Lock order consistency* (prevent deadlock if using multiple locks)
+
+*** Example: DepthMapCache
+
+#+BEGIN_SRC python
+class DepthMapCache:
+    def __init__(self, maxlen=10):
+        self.depth_map = None
+        self.timestamp = 0
+        self.lock = threading.Lock()  # Create lock
+
+    def set(self, depth_map):
+        """Store depth map (thread-safe)."""
+        with self.lock:  # Acquire lock
+            self.depth_map = depth_map
+            self.timestamp = time.time()
+        # Lock automatically released here
+
+    def get(self):
+        """Retrieve depth map (thread-safe)."""
+        with self.lock:
+            return self.depth_map, self.timestamp
+#+END_SRC
+
+** collections.deque with maxlen
+
+*** Purpose
+    Thread-safe bounded queue with automatic eviction of old items.
+
+*** Thread Safety Guarantees
+    - =append()= and =popleft()= are *atomic* (thread-safe without lock)
+    - Reading =len()= is atomic
+    - Iteration is *NOT* thread-safe (requires lock)
+
+*** Usage Pattern
+
+#+BEGIN_SRC python
+from collections import deque
+
+class AsyncWorker:
+    def __init__(self):
+        # Bounded queue: automatically discards oldest when full
+        self.queue = deque(maxlen=2)
+        self.lock = threading.Lock()
+
+    def add_item(self, item):
+        """Add item to queue (thread-safe with lock for iteration)."""
+        with self.lock:
+            self.queue.append(item)  # Atomic operation
+
+    def get_item(self):
+        """Get item from queue (thread-safe)."""
+        with self.lock:
+            if len(self.queue) > 0:  # Atomic check
+                return self.queue.popleft()  # Atomic operation
+        return None
+#+END_SRC
+
+*** Why Lock Even Though Operations Are Atomic?
+    - *Compound operations* need atomicity (check length + pop)
+    - *Iteration* over deque is not thread-safe
+    - *Consistency* between related operations
+
+*** Locations in Codebase
+
+| Variable       | File                           | Line | maxlen | Purpose                 |
+|----------------+--------------------------------+------+--------+-------------------------|
+| image_queue    | app/services/depth_estimator.py | 242  | 2      | Depth estimation queue  |
+| scales         | app/services/depth_estimator.py | 147  | 20     | Auto-calibration buffer |
+
+** Daemon Threads
+
+*** Purpose
+    Automatically terminate when main process exits, preventing hanging background tasks.
+
+*** Usage Pattern
+
+#+BEGIN_SRC python
+import threading
+
+class BackgroundWorker(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)  # Mark as daemon
+        self.running = True
+
+    def run(self):
+        while self.running:
+            # Process work...
+            pass
+
+    def stop(self, timeout=2.0):
+        """Graceful shutdown."""
+        self.running = False
+        self.join(timeout=timeout)  # Wait up to 2 seconds
+#+END_SRC
+
+*** Daemon vs Non-Daemon
+
+| Thread Type   | Exit Behavior                       | Use Case                    |
+|---------------+-------------------------------------+-----------------------------|
+| Daemon        | Terminates when main process exits  | Background workers          |
+| Non-Daemon    | Keeps process alive until complete  | Critical cleanup tasks      |
+
+*** Locations in Codebase
+
+| Thread           | File                           | Line | Purpose                  |
+|------------------+--------------------------------+------+--------------------------|
+| AsyncDepthWorker | app/services/depth_estimator.py | 237  | Async depth processing   |
+
+** Singleton Pattern with Global Instances
+
+*** Purpose
+    Share single instance across multiple requests without locks (Flask multiprocessing model).
+
+*** Flask's Multiprocessing Model
+    - Each worker *process* has its own memory space
+    - No shared memory between processes
+    - Global variables are *process-local*
+    - No need for locks on process-local globals
+
+*** Usage Pattern
+
+#+BEGIN_SRC python
+# Global instances (process-local, no locking needed)
+_detector = None
+_depth_estimator = None
+
+def get_detector():
+    """Lazy initialization of global detector."""
+    global _detector
+    if _detector is None:
+        _detector = YOLODetector(model_path=YOLO_MODEL_PATH)
+    return _detector
+
+def get_depth_estimator():
+    """Lazy initialization of global depth estimator."""
+    global _depth_estimator
+    if _depth_estimator is None:
+        _depth_estimator = DepthEstimator(use_async=True)
+        _depth_estimator.initialize()  # Starts AsyncDepthWorker
+    return _depth_estimator
+#+END_SRC
+
+*** Why No Lock Needed?
+    1. Flask runs in separate *processes*, not threads
+    2. Each process has independent copy of globals
+    3. Within a process, only one request handler runs at a time (unless threaded mode)
+    4. Lazy initialization happens once per process
+
+*** Locations in Codebase
+
+| Variable          | File                     | Line | Shared Across          |
+|-------------------+--------------------------+------+------------------------|
+| _detector         | app/routes/detection.py  | 25   | Requests in same process |
+| _depth_estimator  | app/routes/detection.py  | 26   | Requests in same process |
+
+** atexit and Signal Handlers
+
+*** Purpose
+    Graceful cleanup on application exit (Ctrl+C, kill, normal exit).
+
+*** Usage Pattern
+
+#+BEGIN_SRC python
+import signal
+import atexit
+import sys
+
+def cleanup_and_exit(signum=None, frame=None):
+    """Cleanup resources before exiting."""
+    print("Shutting down server...")
+
+    # Stop async workers
+    if _depth_estimator:
+        _depth_estimator.cleanup()
+        _depth_estimator.async_worker.stop(timeout=3.0)
+
+    # Clear GPU memory
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    sys.exit(0)
+
+# Register signal handlers
+signal.signal(signal.SIGINT, cleanup_and_exit)   # Ctrl+C
+signal.signal(signal.SIGTERM, cleanup_and_exit)  # kill command
+atexit.register(cleanup_and_exit)                # Normal exit
+#+END_SRC
+
+*** Signal Types
+
+| Signal   | Trigger          | Behavior                     |
+|----------+------------------+------------------------------|
+| SIGINT   | Ctrl+C           | Interrupt (request cleanup)  |
+| SIGTERM  | kill PID         | Terminate (request cleanup)  |
+| atexit   | Normal exit      | Always runs on clean exit    |
+
+*** Locations in Codebase
+
+| Handler              | File    | Line | Cleanup Actions                        |
+|----------------------+---------+------+----------------------------------------|
+| cleanup_and_exit     | run.py  | 32   | Stop workers, clear GPU, exit          |
+
+* Frontend Synchronization (JavaScript)
+
+** Request ID Tracking
+
+*** Purpose
+    Prevent processing stale responses when newer requests are in flight.
+
+*** Design Pattern
+    Monotonically increasing counter with validation after async operations.
+
+*** Usage Pattern
+
+#+BEGIN_SRC javascript
+let requestIdCounter = 0;
+let latestRequestId = 0;
+
+async function sendRequest() {
+    // Assign unique ID
+    const thisRequestId = ++requestIdCounter;
+    latestRequestId = thisRequestId;
+
+    // Send request
+    const response = await fetch('/detect_image', ...);
+
+    // Check #1: After response received
+    if (thisRequestId !== latestRequestId) {
+        console.warn('Stale response - ignoring');
+        return;
+    }
+
+    const data = await response.json();
+
+    // Check #2: After JSON parsing
+    if (thisRequestId !== latestRequestId) {
+        console.warn('Stale response after parsing - ignoring');
+        return;
+    }
+
+    // Safe to process
+    processResponse(data);
+}
+#+END_SRC
+
+*** Why Double-Check?
+    - Async operations can be interrupted by new requests
+    - Check after =fetch()=: Response received
+    - Check after =response.json()=: JSON parsing complete
+    - Both points can be preempted by newer request
+
+*** Visual Example
+
+#+BEGIN_SRC
+Time -->
+Request #1 (ID=1, latestRequestId=1)
+  |
+  +--- 50ms --- Request #2 (ID=2, latestRequestId=2)
+  |              |
+  |              +--- 100ms --- Response #2 arrives
+  |                             thisRequestId=2, latestRequestId=2 ✓
+  |                             Process response
+  |
+  +--- 200ms --- Response #1 arrives (LATE!)
+                 thisRequestId=1, latestRequestId=2 ✗
+                 Ignore stale response
+#+END_SRC
+
+*** Locations in Codebase
+
+| Variable          | File                         | Line | Purpose                     |
+|-------------------+------------------------------+------+-----------------------------|
+| requestIdCounter  | app/static/js/modules/camera.js | 15   | Monotonic request counter   |
+| latestRequestId   | app/static/js/modules/camera.js | 16   | Track latest request        |
+
+** AbortController
+
+*** Purpose
+    Cancel pending HTTP requests on timeout or manual stop.
+
+*** Usage Pattern
+
+#+BEGIN_SRC javascript
+let currentAbortController = null;
+
+async function sendRequest() {
+    // Create new abort controller
+    currentAbortController = new AbortController();
+
+    // Set timeout to abort after 5 seconds
+    const timeoutId = setTimeout(() => {
+        currentAbortController.abort();
+    }, 5000);
+
+    try {
+        // Send request with abort signal
+        const response = await fetch('/detect_image', {
+            signal: currentAbortController.signal
+        });
+
+        clearTimeout(timeoutId);  // Cancel timeout on success
+
+        // Process response...
+    } catch (error) {
+        clearTimeout(timeoutId);  // Cancel timeout on error
+
+        if (error.name === 'AbortError') {
+            console.log('Request aborted');
+        } else {
+            console.error('Request failed:', error);
+        }
+    } finally {
+        currentAbortController = null;  // Cleanup
+    }
+}
+
+function stopDetection() {
+    // Manually abort pending request
+    if (currentAbortController) {
+        currentAbortController.abort();
+    }
+}
+#+END_SRC
+
+*** Abort Scenarios
+
+| Scenario           | Trigger                     | Behavior                   |
+|--------------------+-----------------------------+----------------------------|
+| Timeout            | setTimeout() expires        | Abort, throw AbortError    |
+| Manual stop        | User clicks stop button     | Abort, throw AbortError    |
+| Page unload        | beforeunload event          | Abort, cleanup             |
+
+*** Locations in Codebase
+
+| Variable                | File                         | Line | Purpose                        |
+|-------------------------+------------------------------+------+--------------------------------|
+| currentAbortController  | app/static/js/modules/camera.js | 18   | Active request abort controller |
+
+** isProcessingRequest Flag
+
+*** Purpose
+    Prevent overlapping detection requests (request coalescing).
+
+*** Usage Pattern
+
+#+BEGIN_SRC javascript
+let isProcessingRequest = false;
+
+setInterval(async () => {
+    // Skip if already processing
+    if (isProcessingRequest) {
+        console.log('Skipping frame - already processing');
+        return;
+    }
+
+    try {
+        isProcessingRequest = true;
+
+        // Send request and process response...
+
+    } catch (error) {
+        console.error('Error:', error);
+    } finally {
+        isProcessingRequest = false;  // Always reset
+    }
+}, 30);  // 30ms interval (~33 FPS)
+#+END_SRC
+
+*** Flow Diagram
+
+#+BEGIN_SRC
+Frame 1: isProcessingRequest=false -> Start request, set flag=true
+Frame 2: isProcessingRequest=true -> Skip (previous request still processing)
+Frame 3: isProcessingRequest=true -> Skip
+Frame 4: Previous request completes, flag=false
+Frame 5: isProcessingRequest=false -> Start new request, set flag=true
+#+END_SRC
+
+*** Locations in Codebase
+
+| Variable            | File                         | Line | Purpose                       |
+|---------------------+------------------------------+------+-------------------------------|
+| isProcessingRequest | app/static/js/modules/camera.js | 17   | Prevent request overlapping   |
+
+** Audio State Machine
+
+*** Purpose
+    Prevent audio collisions and ensure priority-based playback.
+
+*** States
+
+| State              | Meaning                          | Allowed Transitions           |
+|--------------------+----------------------------------+-------------------------------|
+| IDLE               | No audio playing                 | -> SPEAKING_*                 |
+| SPEAKING_CRITICAL  | Playing critical warning         | -> IDLE                       |
+| SPEAKING_HIGH      | Playing high priority message    | -> IDLE, -> SPEAKING_CRITICAL |
+| SPEAKING_NORMAL    | Playing normal message           | -> IDLE, -> SPEAKING_*        |
+| SPEAKING_LOW       | Playing low priority message     | -> IDLE, -> SPEAKING_*        |
+
+*** Usage Pattern
+
+#+BEGIN_SRC javascript
+const audioState = {
+    currentState: 'IDLE',
+    currentPriority: null,
+    isPlaying: false
+};
+
+function speakImmediate(text, priority) {
+    // Update state machine
+    audioState.isPlaying = true;
+    audioState.currentPriority = priority;
+    audioState.currentState = `SPEAKING_${priority.toUpperCase()}`;
+
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    utterance.onend = () => {
+        // Transition back to IDLE
+        audioState.isPlaying = false;
+        audioState.currentPriority = null;
+        audioState.currentState = 'IDLE';
+
+        // Process next in queue
+        setTimeout(processAudioQueue, 200);
+    };
+
+    speechSynthesis.speak(utterance);
+}
+#+END_SRC
+
+*** State Transition Diagram
+
+#+BEGIN_SRC
+        +------+
+        | IDLE |<-------------------------------+
+        +------+                                |
+          |  ^                                  |
+  speak() |  | utterance.onend                 |
+          v  |                                  |
+    +-----------+         Interrupt (critical)  |
+    | SPEAKING_ |------------------------------>|
+    | * (any)   |                               |
+    +-----------+                               |
+          |                                     |
+          +-------------------------------------+
+                  Complete playback
+#+END_SRC
+
+*** Locations in Codebase
+
+| Variable       | File                         | Line | Purpose                 |
+|----------------+------------------------------+------+-------------------------|
+| audioState     | app/static/js/modules/audio.js | 12   | Global audio state      |
+| currentState   | app/static/js/modules/audio.js | 15   | State machine tracker   |
+
+** Rate Limiters
+
+*** Purpose
+    Prevent audio spam and ensure cooldown between announcements.
+
+*** Global Rate Limiter
+
+#+BEGIN_SRC javascript
+const MIN_SPEECH_INTERVAL_MS = 800;  // Minimum between ANY speech
+let lastAnySpeechTime = 0;
+
+function speak(text, priority) {
+    const now = Date.now();
+    const timeSinceLastSpeech = now - lastAnySpeechTime;
+
+    // Check global rate limit
+    if (timeSinceLastSpeech < MIN_SPEECH_INTERVAL_MS) {
+        console.log(`RATE LIMITED: Only ${timeSinceLastSpeech}ms since last speech`);
+        queueAnnouncement(text, priority);  // Queue instead
+        return;
+    }
+
+    lastAnySpeechTime = now;
+    speakImmediate(text, priority);
+}
+#+END_SRC
+
+*** Critical Warning Cooldown
+
+#+BEGIN_SRC javascript
+const CRITICAL_COOLDOWN_MS = 3000;  // 3 seconds between critical warnings
+let lastCriticalWarningTime = 0;
+
+function shouldInterruptAudio(priority, isCriticalSceneChange, text) {
+    if (priority === 'critical') {
+        const timeSinceCritical = Date.now() - lastCriticalWarningTime;
+
+        // Check if same critical warning (fuzzy match)
+        if (timeSinceCritical < CRITICAL_COOLDOWN_MS) {
+            const isSameWarning = fuzzyMatchWarning(text, lastCriticalWarningText);
+            if (isSameWarning) {
+                console.log('Skipping duplicate critical warning (cooldown)');
+                return false;
+            }
+        }
+
+        lastCriticalWarningTime = Date.now();
+        return true;
+    }
+
+    // Other priorities use state machine logic...
+}
+#+END_SRC
+
+*** Rate Limiter Types
+
+| Type                 | Interval | Applies To           | Purpose                     |
+|----------------------+----------+----------------------+-----------------------------|
+| Global speech        | 800ms    | All audio            | Prevent overwhelming user   |
+| Critical cooldown    | 3000ms   | Critical warnings    | Avoid repeating same warning |
+| Per-class interval   | Dynamic  | Object announcements | Distance-based frequency    |
+
+*** Dynamic Per-Class Interval
+
+| Distance    | Interval | Rationale                          |
+|-------------+----------+------------------------------------|
+| <1m         | 1000ms   | Critical - frequent updates        |
+| 1-2m        | 2000ms   | Important - moderate frequency     |
+| 2-4m        | 3000ms   | Aware - slower frequency           |
+| >4m         | 5000ms   | Informational - infrequent updates |
+
+*** Locations in Codebase
+
+| Variable                  | File                         | Line | Purpose                        |
+|---------------------------+------------------------------+------+--------------------------------|
+| MIN_SPEECH_INTERVAL_MS    | app/static/js/modules/audio.js | 20   | Global rate limit              |
+| CRITICAL_COOLDOWN_MS      | app/static/js/modules/audio.js | 21   | Critical warning cooldown      |
+| lastAnySpeechTime         | app/static/js/modules/audio.js | 18   | Last speech timestamp          |
+| lastCriticalWarningTime   | app/static/js/modules/audio.js | 19   | Last critical warning timestamp |
+| lastAnnouncement          | app/static/js/modules/detection.js | 285  | Per-class announcement times   |
+
+* Synchronization Best Practices
+
+** Python (Backend)
+
+*** DO
+    - Always use =with lock:= for thread-safe operations
+    - Use daemon threads for background workers
+    - Implement graceful shutdown with =stop()= methods
+    - Keep critical sections small (minimize lock hold time)
+    - Use deque for bounded queues (automatic eviction)
+
+*** DON'T
+    - Never call locked method from another locked method (deadlock)
+    - Don't forget to copy data when passing to threads (shared memory)
+    - Don't use global state without understanding Flask's multiprocessing
+    - Don't skip cleanup handlers (atexit, signal handlers)
+
+** JavaScript (Frontend)
+
+*** DO
+    - Always use request ID tracking for async operations
+    - Double-check request ID after each async step
+    - Use AbortController for timeout and cancellation
+    - Implement state machines for audio/UI state
+    - Use rate limiters to prevent spam
+
+*** DON'T
+    - Never assume responses arrive in order
+    - Don't forget to clear timeouts (memory leaks)
+    - Don't skip =finally= blocks (resource cleanup)
+    - Don't allow overlapping requests (use processing flag)
+
+* Summary Table
+
+| Mechanism           | Backend/Frontend | Purpose                         | Location                    |
+|---------------------+------------------+---------------------------------+-----------------------------|
+| threading.Lock      | Backend          | Mutual exclusion                | depth_estimator.py          |
+| deque(maxlen)       | Backend          | Bounded queue                   | depth_estimator.py          |
+| Daemon threads      | Backend          | Auto-cleanup on exit            | depth_estimator.py          |
+| Singleton pattern   | Backend          | Share instances                 | detection.py                |
+| Signal handlers     | Backend          | Graceful shutdown               | run.py                      |
+| Request ID tracking | Frontend         | Prevent stale responses         | camera.js                   |
+| AbortController     | Frontend         | Cancel requests                 | camera.js                   |
+| isProcessingRequest | Frontend         | Prevent overlapping requests    | camera.js                   |
+| State machine       | Frontend         | Audio collision prevention      | audio.js                    |
+| Rate limiters       | Frontend         | Prevent audio spam              | audio.js, detection.js      |
+
+* Related Documentation
+
+- [[file:async-architecture.org][Overall Async Architecture]]
+- [[file:async-backend-threading.org][Backend Threading Patterns]]
+- [[file:async-frontend-patterns.org][Frontend Async Patterns]]
+- [[file:async-audio-system.org][Audio Queue State Machine]]
+
+* See Also
+
+- Python threading: https://docs.python.org/3/library/threading.html
+- Python signal: https://docs.python.org/3/library/signal.html
+- Python atexit: https://docs.python.org/3/library/atexit.html
+- MDN AbortController: https://developer.mozilla.org/en-US/docs/Web/API/AbortController
+- MDN Web Speech API: https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API

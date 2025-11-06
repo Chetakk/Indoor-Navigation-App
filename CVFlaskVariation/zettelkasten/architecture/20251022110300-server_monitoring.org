@@ -1,0 +1,429 @@
+#+TITLE: Server Monitoring and System Metrics
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: monitoring metrics performance health-checks observability
+#+RELATED: [[file:20251022110200-camera_registry_system.org][Camera Registry System]]
+#+RELATED: [[file:../codebase/20251015110900-cv_project_index.org][CV Project Index]]
+
+* Overview
+
+Server monitoring provides real-time visibility into system health, resource usage, and performance metrics. Essential for production deployment and debugging.
+
+* Monitoring Architecture
+
+** Singleton Monitor Pattern
+
+#+BEGIN_SRC python
+# Global monitor instance
+_monitor = None
+
+def get_monitor() -> ServerMonitor:
+    global _monitor
+    if _monitor is None:
+        _monitor = ServerMonitor()
+    return _monitor
+#+END_SRC
+
+Initialized once at application startup, accessed globally across all routes.
+
+* System Metrics
+
+** CPU Monitoring
+
+#+BEGIN_SRC python
+def get_cpu_metrics(self):
+    return {
+        'percent': psutil.cpu_percent(interval=0.1),
+        'count': psutil.cpu_count(),
+        'frequency': psutil.cpu_freq().current  # MHz
+    }
+#+END_SRC
+
+*Metrics Collected:*
+- CPU utilization percentage (0-100%)
+- Number of logical cores
+- Current frequency (MHz)
+- Per-core usage (optional)
+
+*Health Threshold:* Warn if CPU > 90% for sustained period
+
+** Memory Monitoring
+
+#+BEGIN_SRC python
+def get_memory_metrics(self):
+    memory = psutil.virtual_memory()
+    return {
+        'total_gb': round(memory.total / (1024**3), 2),
+        'used_gb': round(memory.used / (1024**3), 2),
+        'available_gb': round(memory.available / (1024**3), 2),
+        'percent': memory.percent
+    }
+#+END_SRC
+
+*Metrics Collected:*
+- Total RAM (GB)
+- Used RAM (GB)
+- Available RAM (GB)
+- Usage percentage
+
+*Health Threshold:* Warn if memory > 90%
+
+** GPU Monitoring
+
+#+BEGIN_SRC python
+def get_gpu_metrics(self):
+    if not torch.cuda.is_available():
+        return {'available': False}
+
+    memory_allocated = torch.cuda.memory_allocated(0) / (1024**3)
+    memory_cached = torch.cuda.memory_reserved(0) / (1024**3)
+    memory_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+
+    utilization = (memory_allocated / memory_total * 100)
+
+    return {
+        'available': True,
+        'name': torch.cuda.get_device_name(0),
+        'memory_total_gb': round(memory_total, 2),
+        'memory_allocated_gb': round(memory_allocated, 2),
+        'memory_cached_gb': round(memory_cached, 2),
+        'utilization_percent': round(utilization, 1)
+    }
+#+END_SRC
+
+*Metrics Collected:*
+- GPU model name (e.g., "RTX 5060")
+- Total VRAM (GB)
+- Allocated VRAM (GB)
+- Cached/reserved VRAM (GB)
+- Utilization percentage
+
+*PyTorch Memory Management:*
+- *Allocated*: Memory actually used by tensors
+- *Cached/Reserved*: Memory reserved by CUDA allocator for future use
+- *Total*: Maximum GPU memory available
+
+*Health Threshold:* Warn if GPU utilization > 95%
+
+** Disk Monitoring
+
+#+BEGIN_SRC python
+def get_disk_metrics(self):
+    disk = psutil.disk_usage('/')
+    return {
+        'total_gb': round(disk.total / (1024**3), 2),
+        'used_gb': round(disk.used / (1024**3), 2),
+        'free_gb': round(disk.free / (1024**3), 2),
+        'percent': disk.percent
+    }
+#+END_SRC
+
+Monitors root filesystem ('/') usage.
+
+** Network Monitoring
+
+#+BEGIN_SRC python
+def get_network_metrics(self):
+    net_io = psutil.net_io_counters()
+    return {
+        'bytes_sent_mb': round(net_io.bytes_sent / (1024**2), 2),
+        'bytes_recv_mb': round(net_io.bytes_recv / (1024**2), 2),
+        'packets_sent': net_io.packets_sent,
+        'packets_recv': net_io.packets_recv
+    }
+#+END_SRC
+
+*Cumulative metrics since boot:*
+- Total bytes sent/received (MB)
+- Total packets sent/received
+
+Useful for detecting network saturation or abnormal traffic.
+
+* Application Metrics
+
+** Request Tracking
+
+#+BEGIN_SRC python
+class ServerMonitor:
+    def __init__(self):
+        self.request_count = 0
+        self.error_count = 0
+
+    def record_request(self):
+        self.request_count += 1
+
+    def record_error(self):
+        self.error_count += 1
+#+END_SRC
+
+Tracks total requests and errors across application lifetime.
+
+** Inference Performance
+
+#+BEGIN_SRC python
+def record_inference(self, inference_time: float):
+    self.total_inference_time += inference_time
+    self.inference_count += 1
+
+def get_performance_stats(self):
+    avg_inference_time = (
+        self.total_inference_time / self.inference_count
+        if self.inference_count > 0 else 0
+    )
+    return {
+        'total_inferences': self.inference_count,
+        'avg_inference_time_ms': round(avg_inference_time * 1000, 2)
+    }
+#+END_SRC
+
+*Key Metrics:*
+- Total inferences performed
+- Average inference time (ms)
+- Inference throughput (inferences/sec)
+
+** Error Rate Calculation
+
+#+BEGIN_SRC python
+error_rate = (
+    (self.error_count / self.request_count * 100)
+    if self.request_count > 0 else 0
+)
+#+END_SRC
+
+*Healthy error rate:* < 5%
+*Warning threshold:* > 10%
+
+** Uptime Tracking
+
+#+BEGIN_SRC python
+def __init__(self):
+    self.start_time = time.time()
+
+def get_uptime(self):
+    return time.time() - self.start_time
+
+def get_uptime_formatted(self):
+    uptime = self.get_uptime()
+    days = int(uptime // 86400)
+    hours = int((uptime % 86400) // 3600)
+    minutes = int((uptime % 3600) // 60)
+    seconds = int(uptime % 60)
+    return f"{days}d {hours}h {minutes}m {seconds}s"
+#+END_SRC
+
+* Health Checks
+
+** Overall Health Status
+
+#+BEGIN_SRC python
+def get_health_status(self):
+    cpu = self.get_cpu_metrics()
+    memory = self.get_memory_metrics()
+    gpu = self.get_gpu_metrics()
+    model = self.get_model_status()
+
+    is_healthy = (
+        cpu['percent'] < 90 and
+        memory['percent'] < 90 and
+        model['loaded'] and
+        (not gpu['available'] or gpu['utilization_percent'] < 95)
+    )
+
+    warnings = []
+    if cpu['percent'] >= 90:
+        warnings.append('High CPU usage')
+    if memory['percent'] >= 90:
+        warnings.append('High memory usage')
+    if gpu['available'] and gpu['utilization_percent'] >= 95:
+        warnings.append('High GPU utilization')
+    if not model['loaded']:
+        warnings.append('Model not loaded')
+
+    return {
+        'status': 'healthy' if is_healthy else 'warning',
+        'timestamp': datetime.now().isoformat(),
+        'warnings': warnings
+    }
+#+END_SRC
+
+*Health States:*
+- *healthy*: All metrics within acceptable ranges
+- *warning*: One or more metrics approaching limits
+- *critical*: System failure or unavailable (not implemented)
+
+** Model Loading Status
+
+#+BEGIN_SRC python
+def get_model_status(self):
+    detector = get_detector()
+    return {
+        'loaded': detector is not None,
+        'classes': len(detector.class_names) if detector else 0,
+        'device': str(detector.device) if detector else 'unknown',
+        'model_type': 'YOLOv8'
+    }
+#+END_SRC
+
+Verifies YOLO detector is properly loaded and ready.
+
+* Process-Level Monitoring
+
+** Current Process Metrics
+
+#+BEGIN_SRC python
+def get_process_metrics(self):
+    process = psutil.Process()
+    return {
+        'cpu_percent': process.cpu_percent(interval=0.1),
+        'memory_mb': round(process.memory_info().rss / (1024**2), 2),
+        'threads': process.num_threads(),
+        'open_files': len(process.open_files())
+    }
+#+END_SRC
+
+*Process-specific metrics:*
+- CPU usage by Flask process (not system-wide)
+- Memory used by Flask process (RSS - Resident Set Size)
+- Number of active threads
+- Number of open file descriptors
+
+Useful for detecting memory leaks or resource exhaustion.
+
+* Dashboard Integration
+
+** Unified Metrics Endpoint
+
+#+BEGIN_SRC python
+def get_all_metrics(self):
+    return {
+        'health': self.get_health_status(),
+        'cpu': self.get_cpu_metrics(),
+        'memory': self.get_memory_metrics(),
+        'gpu': self.get_gpu_metrics(),
+        'disk': self.get_disk_metrics(),
+        'network': self.get_network_metrics(),
+        'process': self.get_process_metrics(),
+        'model': self.get_model_status(),
+        'performance': self.get_performance_stats()
+    }
+#+END_SRC
+
+Single API call returns all metrics (reduces dashboard polling overhead).
+
+** Frontend Polling
+
+#+BEGIN_SRC javascript
+// Dashboard polls metrics every 2 seconds
+setInterval(() => {
+    fetch('/admin/metrics')
+        .then(r => r.json())
+        .then(metrics => {
+            updateCPUChart(metrics.cpu.percent);
+            updateMemoryChart(metrics.memory.percent);
+            updateGPUChart(metrics.gpu.utilization_percent);
+            updateHealthBadge(metrics.health.status);
+        });
+}, 2000);
+#+END_SRC
+
+* Observability Best Practices
+
+** Metrics Collection
+
+1. *Low Overhead*: Monitoring should not significantly impact performance
+   - Use sampling (e.g., psutil.cpu_percent(interval=0.1))
+   - Cache expensive operations
+   - Aggregate instead of per-request
+
+2. *Actionable Metrics*: Focus on metrics that drive decisions
+   - Latency (p50, p95, p99 percentiles)
+   - Error rates
+   - Resource saturation
+
+3. *Context*: Metrics are more useful with context
+   - Timestamp
+   - Server uptime
+   - Workload characteristics
+
+** Alert Thresholds
+
+Current implementation uses fixed thresholds:
+- CPU: 90%
+- Memory: 90%
+- GPU: 95%
+
+*Better approach:* Adaptive thresholds based on historical data
+
+** Time-Series Data
+
+Current limitation: No historical data stored
+
+*Future enhancement:* Store metrics in time-series database
+- Prometheus + Grafana
+- InfluxDB
+- TimescaleDB
+
+* Performance Considerations
+
+** psutil Overhead
+
+psutil operations have varying costs:
+- *Fast* (< 1ms): cpu_percent(), memory_info()
+- *Moderate* (1-10ms): disk_usage(), net_io_counters()
+- *Slow* (10-100ms): per-process metrics with many processes
+
+*Mitigation:* Cache metrics, update asynchronously
+
+** GPU Metrics
+
+PyTorch CUDA calls can block:
+- torch.cuda.memory_allocated() - Fast (< 1ms)
+- torch.cuda.synchronize() - Slow (waits for all GPU ops)
+
+Current implementation avoids synchronize(), only queries memory state.
+
+* Use Cases
+
+1. *Production Monitoring*: Real-time visibility into system health
+2. *Performance Debugging*: Identify bottlenecks (CPU, GPU, memory)
+3. *Capacity Planning*: Understand resource requirements
+4. *Anomaly Detection*: Detect unusual patterns (memory leaks, CPU spikes)
+5. *SLA Compliance*: Track uptime, error rates
+
+* Limitations & Future Work
+
+** Current Limitations
+
+1. *No Persistence*: Metrics lost on restart
+2. *No Alerting*: Warnings displayed but no notifications
+3. *No Aggregation*: Cannot analyze trends over time
+4. *Single Server*: No multi-server monitoring
+
+** Future Enhancements
+
+1. *Prometheus Integration*: Export metrics in Prometheus format
+2. *Alerting*: Email/SMS/Slack alerts on threshold breaches
+3. *Log Aggregation*: Centralize logs from all components
+4. *Distributed Tracing*: Track requests across services
+5. *Custom Metrics*: Track domain-specific metrics (detections/sec, false positive rate)
+
+* Implementation Files
+
+- app/services/server_monitor.py - Monitoring service
+- app/routes/dashboard.py - Dashboard UI and metrics endpoint
+
+* Dependencies
+
+- psutil - System and process utilities
+- torch - GPU metrics (PyTorch)
+
+* References
+- [[file:20251022110200-camera_registry_system.org][Camera Registry System]]
+- [[file:../optimization/20251022110000-tensorrt_optimization.org][TensorRT Optimization]]
+
+* Footnotes
+
+[fn:1] RSS (Resident Set Size): Amount of physical memory (RAM) currently used by a process, including shared libraries.
+
+[fn:2] Prometheus: Open-source monitoring and alerting toolkit. Industry standard for metrics collection in cloud-native applications.
+
+[fn:3] Time-Series Database: Database optimized for time-stamped data. Supports fast writes, compression, downsampling, and time-based queries.

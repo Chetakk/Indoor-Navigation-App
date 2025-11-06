@@ -27,6 +27,9 @@ scipy
 # Optional: For enhanced logging and monitoring
 python-dotenv
 
+# System Monitoring (for dashboard)
+psutil
+
 # Development dependencies (optional - uncomment if needed)
 # pytest
 # pytest-flask

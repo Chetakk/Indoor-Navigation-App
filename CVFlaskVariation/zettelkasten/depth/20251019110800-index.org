@@ -1,0 +1,60 @@
+:PROPERTIES:
+:ID:       20251019110800-index
+:ROAM_ALIASES: "Depth System Index"
+:END:
+#+title: Zettelkasten Index - Depth Estimation System
+#+filetags: :index:meta:
+
+* Purpose
+
+This is an org-roam Zettelkasten documenting the monocular depth estimation system for blind navigation.
+
+All notes use unique IDs and are stored flat in this directory (org-roam compatible).
+
+* Core Notes
+
+** Computer Vision Fundamentals
+- [[id:20251019110000-monocular_depth_estimation][Monocular Depth Estimation]]
+- [[id:20251019110100-pinhole_camera_model][Pinhole Camera Model]]
+
+** Deep Learning Models
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2 Architecture]]
+
+** GPU Optimization
+- [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]]
+- [[id:20251019110400-tensor_cores][NVIDIA Tensor Cores]]
+
+** Software Architecture
+- [[id:20251019110500-async_processing][Asynchronous Processing Architecture]]
+
+** Calibration
+- [[id:20251019110600-auto_calibration][Auto-Calibration System]]
+
+** Application
+- [[id:20251019110700-blind_navigation_requirements][Blind Navigation Requirements]]
+
+* Performance Chain
+
+The 38x speedup comes from:
+1. [[id:20251019110200-depth_anything_v2][Depth Anything V2]] (10x over MiDaS)
+2. [[id:20251019110300-fp16_mixed_precision][FP16 Precision]] (3.82x faster)
+3. [[id:20251019110500-async_processing][Async Processing]] (non-blocking)
+
+* Tag Index
+
+Use ~C-c n f t~ in org-roam to find notes by tag:
+
+- ~:computer_vision:~ - CV fundamentals
+- ~:deep_learning:~ - ML models
+- ~:gpu_optimization:~ - Performance
+- ~:architecture:~ - Software design
+- ~:calibration:~ - Distance calibration
+- ~:application:~ - Use case specific
+
+* Usage (Org-Roam)
+
+- ~C-c n f~ - Find node (by title/alias)
+- ~C-c n i~ - Insert link to node
+- ~C-c n r~ - Org-roam buffer (backlinks)
+- ~C-c n g~ - Graph view
+- ~C-c n c~ - Capture new note

@@ -1,0 +1,232 @@
+#+TITLE: Zettelkasten Master Index
+#+DATE: [2025-10-22]
+#+DESCRIPTION: Complete index of all notes in the CV Project Zettelkasten
+
+* Overview
+
+This Zettelkasten contains comprehensive knowledge base for the CV Project blind navigation system. Notes are organized by topic and interconnected through roam links.
+
+* How to Navigate
+
+** By Topic Directory
+- [[file:annotation/][Annotation]] - Dataset annotation, CVAT, YOLO labels
+- [[file:architecture/][Architecture]] - System architecture, multi-client, monitoring
+- [[file:async/][Async]] - Asynchronous processing, threading, workers
+- [[file:calibration/][Calibration]] - Depth calibration, motion tracking
+- [[file:cnn/][CNN]] - Convolutional neural networks fundamentals
+- [[file:codebase/][Codebase]] - Project-specific implementation details
+- [[file:depth/][Depth]] - Depth estimation, monocular vision
+- [[file:detection/][Detection]] - Object detection, post-processing
+- [[file:geometry/][Geometry]] - Coordinate systems, transformations
+- [[file:models/][Models]] - Model formats, ONNX, export
+- [[file:optimization/][Optimization]] - TensorRT, timing, performance
+- [[file:yolo/][YOLO]] - YOLO architecture, training, inference
+
+** By Date (Most Recent)
+- [2025-10-22] New expansion with 7 major topics
+- [2025-10-19] Depth estimation system
+- [2025-10-16] Annotation and training pipeline
+- [2025-10-15] Core detection and tracking
+
+* Topic Map
+
+** Object Detection Pipeline
+
+*** Theory
+1. [[file:cnn/20251015130100-cnn_fundamentals.org][CNN Fundamentals]]
+2. [[file:cnn/20251015130200-convolution_operations.org][Convolution Operations]]
+3. [[file:cnn/20251015131200-activation_functions.org][Activation Functions]]
+4. [[file:cnn/20251015131300-batch_normalization.org][Batch Normalization]]
+5. [[file:detection/20251015130300-object_detection_paradigms.org][Object Detection Paradigms]]
+6. [[file:detection/20251015130800-backbone_architectures.org][Backbone Architectures]]
+7. [[file:detection/20251015130900-feature_pyramid_networks.org][Feature Pyramid Networks]]
+
+*** YOLO Specifics
+1. [[file:yolo/20251015130000-yolo_architecture_fundamentals.org][YOLO Architecture Fundamentals]]
+2. [[file:yolo/20251015130400-yolo_grid_system.org][YOLO Grid System]]
+3. [[file:yolo/20251015130500-anchor_boxes.org][Anchor Boxes]]
+4. [[file:yolo/20251015130450-bounding_box_predictions.org][Bounding Box Predictions]]
+5. [[file:yolo/20251015130600-iou_confidence_scores.org][IoU and Confidence Scores]]
+6. [[file:yolo/20251015130700-non_maximum_suppression.org][Non Maximum Suppression]]
+7. [[file:yolo/20251015131000-yolo_loss_function.org][YOLO Loss Function]]
+8. [[file:yolo/20251015131100-yolo_versions_evolution.org][YOLO Versions Evolution]]
+
+*** Post-Processing
+1. [[file:detection/20251022110400-signal_filtering.org][Signal Filtering and Post-Processing]]
+2. [[file:geometry/20251022110700-coordinate_systems.org][Coordinate Systems and Transformations]]
+
+** Depth Estimation
+
+1. [[file:depth/20251019110000-monocular_depth_estimation.org][Monocular Depth Estimation]]
+2. [[file:depth/20251019110100-pinhole_camera_model.org][Pinhole Camera Model]]
+3. [[file:depth/20251019110200-depth_anything_v2.org][Depth Anything V2]]
+4. [[file:depth/20251019110600-auto_calibration.org][Auto Calibration]]
+5. [[file:calibration/20251022110100-motion_based_calibration.org][Motion-Based Depth Calibration]] *(NEW)*
+6. [[file:depth/20251019110700-blind_navigation_requirements.org][Blind Navigation Requirements]]
+7. [[file:depth/20251019110800-index.org][Depth Estimation Index]]
+
+** Performance Optimization
+
+1. [[file:optimization/20251022110000-tensorrt_optimization.org][TensorRT Optimization]] *(NEW)*
+2. [[file:depth/20251019110300-fp16_mixed_precision.org][FP16 Mixed Precision]]
+3. [[file:depth/20251019110400-tensor_cores.org][Tensor Cores]]
+4. [[file:optimization/20251022110500-timing_optimization.org][Timing Configuration]] *(NEW)*
+5. [[file:models/20251022110600-onnx_model_format.org][ONNX Model Format]] *(NEW)*
+
+** Asynchronous Processing
+
+1. [[file:async/async-architecture.org][Async Architecture]]
+2. [[file:async/async-backend-threading.org][Backend Threading]]
+3. [[file:async/async-frontend-patterns.org][Frontend Patterns]]
+4. [[file:async/async-synchronization.org][Synchronization]]
+5. [[file:async/async-audio-system.org][Audio System]]
+6. [[file:depth/20251019110500-async_processing.org][Async Depth Processing]]
+
+** System Architecture
+
+1. [[file:architecture/20251022110200-camera_registry_system.org][Camera Registry System]] *(NEW)*
+2. [[file:architecture/20251022110300-server_monitoring.org][Server Monitoring]] *(NEW)*
+3. [[file:codebase/20251015110900-cv_project_index.org][CV Project Index]]
+4. [[file:codebase/20251015111200-data_flow_moc.org][Data Flow MOC]]
+5. [[file:codebase/20251015111300-detection_service_moc.org][Detection Service MOC]]
+6. [[file:codebase/20251015112100-accessibility_moc.org][Accessibility MOC]]
+
+** Object Tracking
+
+1. [[file:codebase/20251015114700-deepsort_algorithm.org][DeepSORT Algorithm]]
+2. [[file:codebase/20251015112900-object_tracking_manager_class.org][Object Tracking Manager]]
+3. [[file:codebase/20251015112500-update_tracks.org][Update Tracks]]
+
+** Navigation and Pathfinding
+
+1. [[file:codebase/20251015112600-predict_collision.org][Collision Prediction]]
+2. [[file:codebase/20251015112700-astar_pathfinding.org][A* Pathfinding]]
+3. [[file:codebase/20251015184400-reactive_navigation.org][Reactive Navigation]]
+4. [[file:codebase/20251015184500-calculate_reactive_navigation.org][Calculate Reactive Navigation]]
+5. [[file:codebase/20251015184600-find_safe_direction.org][Find Safe Direction]]
+6. [[file:codebase/20251015184800-perspective_aware_movement.org][Perspective Aware Movement]]
+
+** Audio and Accessibility
+
+1. [[file:codebase/20251015184700-generate_voice_guidance.org][Voice Guidance Generation]]
+2. [[file:async/async-audio-system.org][Async Audio System]]
+
+** Dataset and Training
+
+1. [[file:annotation/20251016190000-cvat_overview.org][CVAT Overview]]
+2. [[file:annotation/20251016200000-bounding_box_formats.org][Bounding Box Formats]]
+3. [[file:annotation/20251016200100-yolo_label_format.org][YOLO Label Format]]
+4. [[file:annotation/20251016200200-cvat_annotation_workflow.org][CVAT Annotation Workflow]]
+5. [[file:annotation/20251016200300-annotation_formats_comparison.org][Annotation Formats Comparison]]
+6. [[file:annotation/20251016200400-cvat_yolo_integration.org][CVAT YOLO Integration]]
+7. [[file:annotation/20251016200500-open_images_v7_dataset.org][Open Images V7 Dataset]]
+8. [[file:annotation/20251016200600-annotation_quality_guidelines.org][Annotation Quality Guidelines]]
+9. [[file:annotation/20251016200800-dataset_augmentation_strategies.org][Dataset Augmentation]]
+10. [[file:annotation/20251016200900-annotation_tools_comparison.org][Annotation Tools Comparison]]
+11. [[file:annotation/20251016201000-annotation_and_training_moc.org][Annotation MOC]]
+
+** Implementation Details
+
+1. [[file:codebase/20251015112400-yolo_detect.org][YOLO Detect]]
+2. [[file:codebase/20251015112300-detect_image.org][Detect Image]]
+3. [[file:codebase/20251015112800-yolo_detector_class.org][YOLO Detector Class]]
+4. [[file:codebase/20251016152500-request_tracking_stale_responses.org][Request Tracking and Stale Responses]]
+5. [[file:codebase/20251016200700-bbox_coordinate_conversions.org][Bbox Coordinate Conversions]]
+
+* New Topics Added (2025-10-22)
+
+** Optimization
+- [[file:optimization/20251022110000-tensorrt_optimization.org][TensorRT Optimization]] - GPU acceleration, FP16, conversion pipeline
+- [[file:optimization/20251022110500-timing_optimization.org][Timing Configuration]] - Real-time performance tuning
+
+** Calibration
+- [[file:calibration/20251022110100-motion_based_calibration.org][Motion-Based Calibration]] - Accelerometer step detection, depth scale learning
+
+** Architecture
+- [[file:architecture/20251022110200-camera_registry_system.org][Camera Registry]] - Multi-client management, dashboard streaming
+- [[file:architecture/20251022110300-server_monitoring.org][Server Monitoring]] - System metrics, health checks, observability
+
+** Detection & Processing
+- [[file:detection/20251022110400-signal_filtering.org][Signal Filtering]] - Blacklisting, deduplication, IoU-based filtering
+
+** Models
+- [[file:models/20251022110600-onnx_model_format.org][ONNX Format]] - Model interchange, conversion, optimization
+
+** Geometry
+- [[file:geometry/20251022110700-coordinate_systems.org][Coordinate Systems]] - Transformations, bbox formats, 3D projection
+
+* Statistics
+
+** Total Notes: ~70 notes
+** Topics Covered:
+- Object Detection (YOLO): 17 notes
+- Depth Estimation: 9 notes
+- System Architecture: 6 notes
+- Async Processing: 6 notes
+- Dataset/Annotation: 11 notes
+- Optimization: 5 notes
+- Navigation: 7 notes
+- Core Concepts (CNN): 4 notes
+- Calibration: 2 notes
+- Geometry: 2 notes
+- Models: 1 note
+
+* Usage Tips
+
+** For Learning
+1. Start with MOC (Map of Content) files for topic overviews
+2. Follow roam links to dive deeper
+3. Use footnotes for technical definitions
+
+** For Development
+1. Search by topic directory
+2. Check implementation files at end of each note
+3. Follow related links for context
+
+** For Documentation
+1. Each note is self-contained
+2. Code examples included where relevant
+3. Diagrams use ASCII art for portability
+
+* Emacs Org-Roam Integration
+
+#+BEGIN_SRC emacs-lisp
+;; Configure org-roam for this zettelkasten
+(setq org-roam-directory "c:/Users/parik/OneDrive/Documents/GitHub/CV-Project/CVFlaskVariation/zettelkasten")
+
+;; Find notes
+M-x org-roam-node-find
+
+;; Insert link
+M-x org-roam-node-insert
+
+;; Show backlinks
+M-x org-roam-buffer-toggle
+#+END_SRC
+
+* Maintenance
+
+** Adding New Notes
+1. Create file in appropriate topic directory
+2. Use timestamp format: YYYYMMDDHHMMSS-title.org
+3. Add #+ROAM_TAGS header
+4. Link to related notes with [[file:path][Title]]
+5. Update this INDEX.org
+
+** Quality Standards
+1. Self-contained (readable without external context)
+2. Code examples for implementation details
+3. References to project files
+4. Footnotes for technical terms
+5. ASCII diagrams for visual concepts
+
+* Contact and Contribution
+
+This zettelkasten is part of the CV Project for blind navigation assistance.
+All notes follow Emacs org-mode format for maximum compatibility.
+
+** Last Updated
+- Major expansion: [2025-10-22]
+- Depth system: [2025-10-19]
+- Annotation pipeline: [2025-10-16]
+- Initial creation: [2025-10-15]

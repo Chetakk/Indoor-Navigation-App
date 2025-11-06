@@ -18,6 +18,157 @@ let trackingEnabled = true;
 // Minimum confidence threshold - ignore predictions below this
 let MIN_CONFIDENCE_THRESHOLD = 0.3; // 30% minimum confidence
 
+// Scene change detection - prevents redundant audio when nothing changed
+let previousSceneHash = '';
+let previousSceneDetections = [];
+
+/**
+ * Generate a hash representing the current scene state
+ * Used to detect significant changes that warrant new audio announcements
+ * @param {Array<Object>} detections - Current frame detections
+ * @returns {string} Hash representing scene state
+ */
+function generateSceneHash(detections) {
+    if (!detections || detections.length === 0) {
+        return 'empty_scene';
+    }
+
+    // Create signature for each object: trackID_class_distanceCategory_direction_movement
+    const signatures = detections
+        .filter(d => d.confidence >= MIN_CONFIDENCE_THRESHOLD)
+        .map(d => {
+            const imageWidth = canvas ? canvas.width : 640;
+            const imageHeight = canvas ? canvas.height : 480;
+            // Pass depth data if available
+            const depthData = { distance: d.distance, distance_confidence: d.distance_confidence, distance_method: d.distance_method };
+            const distanceInfo = estimateDistance(d.bbox, d.class_name, imageWidth, imageHeight, depthData);
+
+            // Include collision severity for critical changes
+            const collisionSeverity = d.collision?.collision_severity || 'none';
+            const isApproaching = d.collision?.is_approaching ? 'approaching' : 'static';
+
+            // Movement state
+            const movementDir = d.movement?.direction || 'unknown';
+            const speedClass = d.movement?.speed_class || 'unknown';
+
+            // Create signature
+            const trackId = d.track_id !== null && d.track_id !== undefined ? d.track_id : d.class_name;
+            return `${trackId}|${d.class_name}|${distanceInfo.category}|${distanceInfo.directionDetails.horizontal}|${movementDir}|${speedClass}|${collisionSeverity}|${isApproaching}`;
+        })
+        .sort()
+        .join('__');
+
+    return signatures || 'empty_scene';
+}
+
+/**
+ * Determine if scene has changed significantly enough to warrant new audio
+ * @param {Array<Object>} currentDetections - Current frame detections
+ * @returns {Object} Change analysis with shouldAnnounce flag and change type
+ */
+export function analyzeSceneChange(currentDetections) {
+    const currentHash = generateSceneHash(currentDetections);
+
+    // First frame or empty previous scene
+    if (!previousSceneHash || previousSceneHash === 'empty_scene') {
+        previousSceneHash = currentHash;
+        previousSceneDetections = JSON.parse(JSON.stringify(currentDetections));
+        return {
+            shouldAnnounce: currentHash !== 'empty_scene',
+            changeType: 'initial_scene',
+            criticalChange: false
+        };
+    }
+
+    // No change detected
+    if (currentHash === previousSceneHash) {
+        return {
+            shouldAnnounce: false,
+            changeType: 'no_change',
+            criticalChange: false
+        };
+    }
+
+    // Scene changed - analyze what changed
+    const currentTrackIds = new Set(
+        currentDetections
+            .filter(d => d.confidence >= MIN_CONFIDENCE_THRESHOLD)
+            .map(d => d.track_id !== null && d.track_id !== undefined ? d.track_id : d.class_name)
+    );
+
+    const previousTrackIds = new Set(
+        previousSceneDetections
+            .filter(d => d.confidence >= MIN_CONFIDENCE_THRESHOLD)
+            .map(d => d.track_id !== null && d.track_id !== undefined ? d.track_id : d.class_name)
+    );
+
+    // Check for new objects (CRITICAL)
+    const newObjects = [...currentTrackIds].filter(id => !previousTrackIds.has(id));
+
+    // Check for critical collision warnings (CRITICAL)
+    const hasCriticalCollision = currentDetections.some(d =>
+        d.confidence >= MIN_CONFIDENCE_THRESHOLD &&
+        d.collision?.collision_severity === 'high'
+    );
+
+    // Check for new approaching objects (HIGH PRIORITY)
+    const hasNewApproachingObject = currentDetections.some(d => {
+        if (d.confidence < MIN_CONFIDENCE_THRESHOLD) return false;
+        const trackId = d.track_id !== null && d.track_id !== undefined ? d.track_id : d.class_name;
+        const wasNotPreviouslyApproaching = !previousSceneDetections.some(pd => {
+            const prevTrackId = pd.track_id !== null && pd.track_id !== undefined ? pd.track_id : pd.class_name;
+            return prevTrackId === trackId && pd.collision?.is_approaching;
+        });
+        return d.collision?.is_approaching && wasNotPreviouslyApproaching;
+    });
+
+    // Check for movement changes (MEDIUM PRIORITY)
+    const hasMovementChange = currentDetections.some(d => {
+        if (d.confidence < MIN_CONFIDENCE_THRESHOLD) return false;
+        const trackId = d.track_id !== null && d.track_id !== undefined ? d.track_id : d.class_name;
+        const prevDetection = previousSceneDetections.find(pd => {
+            const prevTrackId = pd.track_id !== null && pd.track_id !== undefined ? pd.track_id : pd.class_name;
+            return prevTrackId === trackId;
+        });
+
+        if (!prevDetection) return false;
+
+        const prevMovement = prevDetection.movement?.direction || 'stationary';
+        const currentMovement = d.movement?.direction || 'stationary';
+
+        return prevMovement !== currentMovement;
+    });
+
+    // Determine change type and criticality
+    let changeType = 'minor_change';
+    let criticalChange = false;
+
+    if (hasCriticalCollision) {
+        changeType = 'critical_collision';
+        criticalChange = true;
+    } else if (newObjects.length > 0) {
+        changeType = 'new_objects';
+        criticalChange = true;
+    } else if (hasNewApproachingObject) {
+        changeType = 'approaching_objects';
+        criticalChange = true;
+    } else if (hasMovementChange) {
+        changeType = 'movement_change';
+        criticalChange = false;
+    }
+
+    // Update previous state
+    previousSceneHash = currentHash;
+    previousSceneDetections = JSON.parse(JSON.stringify(currentDetections));
+
+    return {
+        shouldAnnounce: true,
+        changeType: changeType,
+        criticalChange: criticalChange,
+        newObjectCount: newObjects.length
+    };
+}
+
 /**
  * Set minimum confidence threshold for detections
  * @param {number} threshold - Confidence threshold (0.0 to 1.0)
@@ -70,15 +221,14 @@ export function getObjectDirection(bbox, imageWidth, imageHeight) {
     const centerY = (y1 + y2) / 2;
 
     // Normalize coordinates to 0-1 range
-    let normalizedX = centerX / imageWidth;
+    const normalizedX = centerX / imageWidth;
     const normalizedY = centerY / imageHeight;
 
-    // CRITICAL FIX: Invert X coordinate to match visual display
-    // Video/canvas coordinates have X inverted compared to YOLO detections
-    normalizedX = 1.0 - normalizedX;
+    // No coordinate inversion needed - YOLO detections use standard image coordinates
+    // where X=0 is left edge and X=width is right edge, matching the visual display
 
     console.log(`DEBUG DIRECTION - Object center: (${centerX.toFixed(1)}, ${centerY.toFixed(1)}), Image size: (${imageWidth}, ${imageHeight})`);
-    console.log(`DEBUG DIRECTION - Normalized X: ${normalizedX.toFixed(3)} (0=left edge, 1=right edge, AFTER inversion)`);
+    console.log(`DEBUG DIRECTION - Normalized X: ${normalizedX.toFixed(3)} (0=left edge, 1=right edge)`);
 
     // Determine horizontal direction (more detailed zones)
     let horizontalDirection;
@@ -140,13 +290,15 @@ export function getObjectDirection(bbox, imageWidth, imageHeight) {
 
 /**
  * Estimate distance with direction information
+ * ENHANCED (2025-10-18): Now uses real depth estimation from backend when available!
  * @param {Array<number>} bbox - Bounding box [x1, y1, x2, y2]
  * @param {string} className - Object class name
  * @param {number} imageWidth - Image width (default 640)
  * @param {number} imageHeight - Image height (default 480)
+ * @param {Object} depthData - Real depth data from backend {distance, distance_confidence, distance_method}
  * @returns {Object} Distance and direction information
  */
-export function estimateDistance(bbox, className, imageWidth = 640, imageHeight = 480) {
+export function estimateDistance(bbox, className, imageWidth = 640, imageHeight = 480, depthData = null) {
     const [x1, y1, x2, y2] = bbox;
     const width = x2 - x1;
     const height = y2 - y1;
@@ -155,35 +307,71 @@ export function estimateDistance(bbox, className, imageWidth = 640, imageHeight 
     // Get direction information
     const directionInfo = getObjectDirection(bbox, imageWidth, imageHeight);
 
-    // Existing distance calculation
-    const videoArea = imageWidth * imageHeight;
-    const objectRatio = area / videoArea;
-
     let estimatedDistance;
     let distanceCategory;
+    let distanceMeters = null;
+    let usingRealDepth = false;
 
-    // Distance estimation based on object type and size
-    if (objectRatio > 0.3) {
-        estimatedDistance = "very close";
-        distanceCategory = "immediate";
-    } else if (objectRatio > 0.15) {
-        estimatedDistance = "close";
-        distanceCategory = "near";
-    } else if (objectRatio > 0.05) {
-        estimatedDistance = "medium distance";
-        distanceCategory = "medium";
-    } else if (objectRatio > 0.01) {
-        estimatedDistance = "far";
-        distanceCategory = "far";
+    // NEW (2025-10-18): Use real depth estimation from backend if available
+    if (depthData && depthData.distance !== null && depthData.distance !== undefined) {
+        distanceMeters = depthData.distance;
+        usingRealDepth = true;
+
+        // Convert meters to distance category and natural language
+        if (distanceMeters < 1.0) {
+            estimatedDistance = `${distanceMeters.toFixed(1)} meters`;  // "0.8 meters"
+            distanceCategory = "immediate";
+        } else if (distanceMeters < 2.0) {
+            estimatedDistance = `${distanceMeters.toFixed(1)} meters`;  // "1.5 meters"
+            distanceCategory = "immediate";
+        } else if (distanceMeters < 4.0) {
+            estimatedDistance = `${Math.round(distanceMeters)} meters`;  // "3 meters"
+            distanceCategory = "near";
+        } else if (distanceMeters < 8.0) {
+            estimatedDistance = `${Math.round(distanceMeters)} meters`;  // "6 meters"
+            distanceCategory = "medium";
+        } else if (distanceMeters < 15.0) {
+            estimatedDistance = `${Math.round(distanceMeters)} meters`;  // "12 meters"
+            distanceCategory = "far";
+        } else {
+            estimatedDistance = `${Math.round(distanceMeters)} meters`;  // "20 meters"
+            distanceCategory = "distant";
+        }
+
+        console.log(`✓ Using REAL depth: ${estimatedDistance} (method: ${depthData.distance_method}, conf: ${(depthData.distance_confidence * 100).toFixed(0)}%)`);
     } else {
-        estimatedDistance = "very far";
-        distanceCategory = "distant";
+        // FALLBACK: Use bbox-based estimation (old method)
+        const videoArea = imageWidth * imageHeight;
+        const objectRatio = area / videoArea;
+
+        if (objectRatio > 0.3) {
+            estimatedDistance = "very close";
+            distanceCategory = "immediate";
+        } else if (objectRatio > 0.15) {
+            estimatedDistance = "close";
+            distanceCategory = "near";
+        } else if (objectRatio > 0.05) {
+            estimatedDistance = "medium distance";
+            distanceCategory = "medium";
+        } else if (objectRatio > 0.01) {
+            estimatedDistance = "far";
+            distanceCategory = "far";
+        } else {
+            estimatedDistance = "very far";
+            distanceCategory = "distant";
+        }
+
+        console.log(`⚠ Using bbox fallback: ${estimatedDistance} (ratio: ${(objectRatio * 100).toFixed(1)}%)`);
     }
 
     return {
         distance: estimatedDistance,
         category: distanceCategory,
-        ratio: objectRatio,
+        distanceMeters: distanceMeters,  // NEW: Real distance in meters
+        usingRealDepth: usingRealDepth,  // NEW: Flag indicating if using real depth
+        depthConfidence: depthData?.distance_confidence || 0,  // NEW: Confidence score
+        depthMethod: depthData?.distance_method || 'bbox_fallback',  // NEW: Estimation method
+        ratio: area / (imageWidth * imageHeight),  // Keep for legacy
         direction: directionInfo.direction,
         directionDetails: directionInfo
     };
@@ -191,6 +379,7 @@ export function estimateDistance(bbox, className, imageWidth = 640, imageHeight 
 
 /**
  * Check for collision warnings and announce them - CRITICAL for blind safety
+ * BATCHES multiple critical warnings to prevent spam
  * @param {Array<Object>} detections - Array of detection objects
  */
 export function checkCollisionWarnings(detections) {
@@ -198,6 +387,10 @@ export function checkCollisionWarnings(detections) {
 
     const now = Date.now();
     const staleThreshold = TimingConfig.tracking.staleThreshold;
+
+    // Collect all critical warnings to batch them
+    const criticalWarnings = [];
+    const otherWarnings = [];
 
     detections.forEach(detection => {
         // Skip low confidence detections
@@ -243,10 +436,11 @@ export function checkCollisionWarnings(detections) {
             movementDesc = ` ${directionText} at ${speedText}`;
         }
 
-        // Get distance info for better context
+        // Get distance info for better context (with real depth!)
         const imageWidth = canvas ? canvas.width : 640;
         const imageHeight = canvas ? canvas.height : 480;
-        const distanceInfo = estimateDistance(detection.bbox, objectName, imageWidth, imageHeight);
+        const depthData = { distance: detection.distance, distance_confidence: detection.distance_confidence, distance_method: detection.distance_method };
+        const distanceInfo = estimateDistance(detection.bbox, objectName, imageWidth, imageHeight, depthData);
 
         // Enhanced warnings with trajectory and movement
         switch(collision.collision_severity) {
@@ -283,10 +477,47 @@ export function checkCollisionWarnings(detections) {
         if (now - lastAlert < alertInterval) return;
 
         if (warningMessage) {
-            console.log('🚨 COLLISION WARNING:', warningMessage, `Priority: ${priority}`);
-            speak(warningMessage, priority);
-            collisionAlerts.set(trackId, now);
+            // Collect warnings by priority for batching
+            if (priority === 'critical') {
+                criticalWarnings.push({ trackId, warningMessage, priority });
+            } else {
+                otherWarnings.push({ trackId, warningMessage, priority });
+            }
         }
+    });
+
+    // ANTI-SPAM: Batch critical warnings into single announcement
+    // This prevents "Danger! person..." -> "Danger! car..." -> "Danger! chair..." spam
+    if (criticalWarnings.length > 0) {
+        if (criticalWarnings.length === 1) {
+            // Single critical warning - announce normally
+            const warning = criticalWarnings[0];
+            console.log('🚨 CRITICAL WARNING:', warning.warningMessage);
+            speak(warning.warningMessage, 'critical', true);
+            collisionAlerts.set(warning.trackId, now);
+        } else {
+            // Multiple critical warnings - batch them
+            const objects = criticalWarnings.map(w => {
+                // Extract object name from message
+                const match = w.warningMessage.match(/(?:Danger|Warning)!\s+(\w+)/i);
+                return match ? match[1] : 'object';
+            });
+
+            // Create batched message
+            const batchedMessage = `Multiple dangers! ${objects.join(', ')} directly ahead!`;
+            console.log('🚨 BATCHED CRITICAL WARNINGS:', batchedMessage, `(${criticalWarnings.length} objects)`);
+            speak(batchedMessage, 'critical', true);
+
+            // Update collision alerts for all objects
+            criticalWarnings.forEach(w => collisionAlerts.set(w.trackId, now));
+        }
+    }
+
+    // Announce other warnings normally (high/normal priority)
+    otherWarnings.forEach(warning => {
+        console.log('⚠️ COLLISION WARNING:', warning.warningMessage, `Priority: ${warning.priority}`);
+        speak(warning.warningMessage, warning.priority, false);
+        collisionAlerts.set(warning.trackId, now);
     });
 }
 
@@ -341,7 +572,8 @@ export function announceTrackingEvents(detections) {
                 // New object detected
                 const imageWidth = canvas ? canvas.width : 640;
                 const imageHeight = canvas ? canvas.height : 480;
-                const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight);
+                const depthData = { distance: detection.distance, distance_confidence: detection.distance_confidence, distance_method: detection.distance_method };
+                const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight, depthData);
 
                 const announcement = `New ${detection.class_name} detected at ${distanceInfo.direction}`;
                 console.log('🆕 NEW TRACK:', announcement);
@@ -407,7 +639,8 @@ export function announceTrackingEvents(detections) {
                         if (now - lastStationary > TimingConfig.collision.stationaryReannounce) {
                             const imageWidth = canvas ? canvas.width : 640;
                             const imageHeight = canvas ? canvas.height : 480;
-                            const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight);
+                            const depthData = { distance: detection.distance, distance_confidence: detection.distance_confidence, distance_method: detection.distance_method };
+                            const distanceInfo = estimateDistance(detection.bbox, detection.class_name, imageWidth, imageHeight, depthData);
                             const announcement = `${detection.class_name} stationary at ${distanceInfo.direction}`;
                             console.log('⏸️ LONG STATIONARY:', announcement);
                             queueAnnouncement(announcement, 'low');
@@ -437,10 +670,11 @@ export function announceTrackingEvents(detections) {
 }
 
 /**
- * Announce detections with direction information and better control
+ * Announce detections with direction information and smart scene change handling
  * @param {Array<Object>} detections - Array of detection objects
+ * @param {Object} sceneAnalysis - Scene change analysis from analyzeSceneChange()
  */
-export function announceDetections(detections) {
+export function announceDetections(detections, sceneAnalysis = null) {
     console.log('Announcing detections:', detections.length, 'objects');
 
     if (!audioState.enabled || detections.length === 0) {
@@ -448,10 +682,15 @@ export function announceDetections(detections) {
         return;
     }
 
+    // If no scene analysis provided, assume we should announce
+    if (!sceneAnalysis) {
+        sceneAnalysis = { shouldAnnounce: true, changeType: 'unknown', criticalChange: false };
+    }
+
     // 1. Check for tracking events (new/lost tracks, movement changes)
     announceTrackingEvents(detections);
 
-    // 2. Check for collisions (higher priority)
+    // 2. Check for collisions (higher priority) - ALWAYS check for safety
     checkCollisionWarnings(detections);
 
     const now = Date.now();
@@ -472,7 +711,8 @@ export function announceDetections(detections) {
         // Use actual image dimensions if available
         const imageWidth = canvas ? canvas.width : 640;
         const imageHeight = canvas ? canvas.height : 480;
-        const distanceInfo = estimateDistance(detection.bbox, className, imageWidth, imageHeight);
+        const depthData = { distance: detection.distance, distance_confidence: detection.distance_confidence, distance_method: detection.distance_method };
+        const distanceInfo = estimateDistance(detection.bbox, className, imageWidth, imageHeight, depthData);
 
         console.log(`Distance and direction for ${className}:`, distanceInfo);
 

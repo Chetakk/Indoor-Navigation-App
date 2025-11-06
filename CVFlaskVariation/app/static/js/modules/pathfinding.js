@@ -12,6 +12,7 @@ export let navigationGuidance = null;
 export let pathfindingEnabled = false;
 export let lastNavigationUpdate = 0;
 const NAVIGATION_UPDATE_INTERVAL = 500; // Update guidance every 500ms
+let navigationInterval = null; // Interval for continuous guidance updates
 
 /**
  * Set navigation goal by clicking on canvas
@@ -31,11 +32,52 @@ export function setNavigationGoal(event, canvas, video) {
 
     navigationGoal = [clickX, clickY];
 
-    console.log('Navigation goal set:', navigationGoal);
-    speak('Navigation goal set');
+    console.log('========================================');
+    console.log('NAVIGATION GOAL SET:', navigationGoal);
+    console.log('========================================');
+    speak('Navigation goal set', 'high');
 
-    // Calculate path if we have detections
+    // Calculate path immediately
     calculateNavigationPath(canvas, video);
+
+    // Start continuous navigation guidance loop
+    startNavigationLoop(canvas, video);
+}
+
+/**
+ * Start continuous navigation guidance loop
+ * @param {HTMLCanvasElement} canvas - Canvas element
+ * @param {HTMLVideoElement} video - Video element
+ */
+function startNavigationLoop(canvas, video) {
+    // Clear any existing interval
+    if (navigationInterval) {
+        clearInterval(navigationInterval);
+    }
+
+    console.log('Starting continuous navigation guidance loop');
+
+    // Run navigation updates continuously
+    navigationInterval = setInterval(() => {
+        if (pathfindingEnabled && navigationGoal) {
+            console.log('Navigation loop: Calculating path...');
+            calculateNavigationPath(canvas, video);
+        } else {
+            console.log('Navigation loop: Stopping (pathfinding disabled or no goal)');
+            stopNavigationLoop();
+        }
+    }, NAVIGATION_UPDATE_INTERVAL);
+}
+
+/**
+ * Stop continuous navigation guidance loop
+ */
+function stopNavigationLoop() {
+    if (navigationInterval) {
+        console.log('Stopping navigation guidance loop');
+        clearInterval(navigationInterval);
+        navigationInterval = null;
+    }
 }
 
 /**
@@ -46,20 +88,28 @@ export function setNavigationGoal(event, canvas, video) {
  */
 export async function calculateNavigationPath(canvas, video) {
     if (!navigationGoal || !pathfindingEnabled) {
+        console.log('Navigation calculation skipped: No goal or pathfinding disabled');
         return;
     }
 
     // Throttle updates to avoid excessive API calls
     const now = Date.now();
     if (now - lastNavigationUpdate < NAVIGATION_UPDATE_INTERVAL) {
+        console.log(`Navigation throttled: ${now - lastNavigationUpdate}ms since last update`);
         return;
     }
     lastNavigationUpdate = now;
 
+    console.log('Calculating navigation path...');
+
     try {
         // Get current detections with movement data
+        console.log('Checking detections for navigation...');
+        console.log('window.lastDetections available:', !!window.lastDetections);
+        console.log('Detection count:', window.lastDetections ? window.lastDetections.length : 0);
+
         if (!window.lastDetections || window.lastDetections.length === 0) {
-            console.log('No detections available for navigation');
+            console.log('No detections available for navigation - providing basic guidance');
             // Still provide basic guidance toward goal
             navigationGuidance = {
                 reached_goal: false,
@@ -69,8 +119,15 @@ export async function calculateNavigationPath(canvas, video) {
                     full_message: 'Walk toward destination'
                 }
             };
+            speak('Walk toward destination', 'normal');
             return;
         }
+
+        console.log(`Processing navigation with ${window.lastDetections.length} detections`);
+
+        console.log('Sending navigation request to /navigate_reactive...');
+        console.log('Goal:', navigationGoal);
+        console.log('Detections:', window.lastDetections.length);
 
         const response = await fetch('/navigate_reactive', {
             method: 'POST',
@@ -83,49 +140,84 @@ export async function calculateNavigationPath(canvas, video) {
             })
         });
 
+        console.log('Navigation response status:', response.status);
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
         const data = await response.json();
+        console.log('Navigation response data:', data);
 
         if (data.success) {
             navigationGuidance = data;
 
             if (data.reached_goal) {
-                speak('Destination reached');
+                console.log('DESTINATION REACHED!');
+                speak('Destination reached', 'high');
                 navigationGoal = null;
                 navigationGuidance = null;
                 pathfindingEnabled = false;
+                stopNavigationLoop();
                 const pathfindingBtn = document.getElementById('pathfindingBtn');
                 if (pathfindingBtn) {
                     pathfindingBtn.innerHTML = '🗺️ Enable Navigation';
                     pathfindingBtn.classList.remove('active');
                 }
             } else {
-                // Queue voice guidance (throttled by audio system)
+                // Navigation guidance - HIGH priority for blind navigation
                 const message = data.guidance.full_message;
-                console.log('Navigation guidance:', message);
+                console.log('========================================');
+                console.log('NAVIGATION GUIDANCE:', message);
+                console.log('User position:', data.user_position);
+                console.log('Distance to goal:', data.distance_to_goal, 'meters');
+                console.log('Warnings:', data.guidance.warnings);
+                console.log('Deviation angle:', data.deviation_angle);
+                console.log('========================================');
 
-                // Only announce if there are warnings or significant direction change
-                if (data.guidance.warnings.length > 0 || data.deviation_angle > 20) {
-                    queueAnnouncement(message, 'medium');
+                // Determine priority based on warnings and deviation
+                let priority = 'normal';
+                if (data.guidance.warnings.length > 0) {
+                    // Obstacles in path - HIGH priority to avoid collision
+                    priority = 'high';
+                } else if (data.deviation_angle > 30) {
+                    // Significant direction change needed - HIGH priority
+                    priority = 'high';
                 }
+
+                // Always announce navigation guidance (user wants to reach the goal!)
+                // Use speak() with critical=false to respect cooldowns but still guide user
+                speak(message, priority, false);
             }
         } else {
-            console.warn('Navigation error:', data.error);
+            console.error('Navigation failed:', data.error);
+            speak(`Navigation error: ${data.error}`, 'high');
         }
     } catch (error) {
-        console.error('Navigation error:', error);
+        console.error('========================================');
+        console.error('NAVIGATION ERROR:', error);
+        console.error('Error details:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+        });
+        console.error('========================================');
     }
 }
 
 /**
  * Toggle navigation mode
  */
-export function togglePathfinding() {
+export async function togglePathfinding() {
     pathfindingEnabled = !pathfindingEnabled;
     const pathfindingBtn = document.getElementById('pathfindingBtn');
 
     if (pathfindingEnabled) {
-        speak('Navigation mode enabled. Click on the video to set a destination');
-        console.log('Reactive navigation enabled - click on canvas to set goal');
+        speak('Navigation mode enabled. Click on the video to set a destination', 'high');
+        console.log('========================================');
+        console.log('NAVIGATION MODE ENABLED');
+        console.log('Click on canvas to set goal');
+        console.log('========================================');
         if (pathfindingBtn) {
             pathfindingBtn.innerHTML = '🗺️ Disable Navigation';
             pathfindingBtn.classList.add('active');
@@ -133,8 +225,30 @@ export function togglePathfinding() {
     } else {
         navigationGoal = null;
         navigationGuidance = null;
-        speak('Navigation mode disabled');
-        console.log('Navigation disabled');
+        stopNavigationLoop(); // Stop the continuous guidance loop
+
+        // Reset navigation session on backend
+        try {
+            console.log('Resetting navigation session on backend...');
+            const response = await fetch('/reset_navigation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Navigation session reset:', data.message);
+            } else {
+                console.error('Failed to reset navigation session:', response.statusText);
+            }
+        } catch (error) {
+            console.error('Error resetting navigation session:', error);
+        }
+
+        speak('Navigation mode disabled', 'high');
+        console.log('========================================');
+        console.log('NAVIGATION MODE DISABLED');
+        console.log('========================================');
         if (pathfindingBtn) {
             pathfindingBtn.innerHTML = '🗺️ Enable Navigation';
             pathfindingBtn.classList.remove('active');

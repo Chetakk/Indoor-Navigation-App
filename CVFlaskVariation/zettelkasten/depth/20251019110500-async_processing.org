@@ -1,0 +1,142 @@
+:PROPERTIES:
+:ID:       20251019110500-async_processing
+:ROAM_ALIASES: "Async Processing" "Background Thread" "Non-Blocking"
+:END:
+#+title: Asynchronous Processing Architecture
+#+filetags: :architecture:performance:async:
+
+* Concept
+
+Asynchronous processing decouples slow operations (depth estimation: 12-15ms) from the critical path (main detection pipeline: <1ms) by running them in separate threads.
+
+The main pipeline never waits for depth - it uses the latest cached result from the background worker.
+
+* Problem It Solves
+
+** Before (Synchronous)
+#+BEGIN_SRC
+Main Thread:
+  YOLO (7ms) -> Depth (150-300ms) -> Tracking (10ms) -> Response
+  Total: 200-350ms (BLOCKED waiting for depth!)
+#+END_SRC
+
+** After (Asynchronous)
+#+BEGIN_SRC
+Main Thread:
+  YOLO (7ms) -> Get Cached Depth (<1ms) -> Tracking (10ms) -> Response
+  Total: 17-20ms (NOT BLOCKED!)
+
+Background Thread (runs independently):
+  Depth Inference (12ms) -> Update Cache -> Repeat
+#+END_SRC
+
+* Architecture Pattern
+
+This follows the *Producer-Consumer* pattern:
+
+- *Producer*: AsyncDepthWorker thread produces depth maps
+- *Consumer*: Main detection thread consumes cached depth maps
+- *Queue*: Thread-safe cache with mutex locks
+
+* Key Components
+
+** 1. Image Queue (Producer Side)
+#+BEGIN_SRC python
+self.image_queue = deque(maxlen=2)  # Only keep latest 2 frames
+self.queue_lock = threading.Lock()
+#+END_SRC
+
+- Main thread adds images to queue
+- Worker thread processes from queue
+- Maxlen=2 ensures we don't accumulate stale images
+
+** 2. Depth Cache (Consumer Side)
+#+BEGIN_SRC python
+class DepthMapCache:
+    def __init__(self):
+        self.depth_map = None
+        self.timestamp = 0
+        self.lock = threading.Lock()
+#+END_SRC
+
+- Worker thread updates cache after inference
+- Main thread reads from cache (always latest)
+- Timestamp tracks freshness
+
+** 3. Worker Thread
+#+BEGIN_SRC python
+class AsyncDepthWorker(threading.Thread):
+    def run(self):
+        while self.running:
+            image = self.image_queue.popleft()
+            depth_map = self._estimate_depth(image)
+            self.cache.set(depth_map)
+#+END_SRC
+
+- Runs as daemon thread (auto-terminates with main)
+- Continuously processes images
+- No blocking or waiting
+
+* Thread Safety
+
+Critical sections protected with locks:
+
+1. *Image Queue Access*: Lock when adding/removing images
+2. *Cache Updates*: Lock when writing depth map
+3. *Cache Reads*: Lock when reading depth map
+
+Python's threading.Lock() ensures mutual exclusion.
+
+* Performance Impact
+
+** Latency
+- Main pipeline: 17-20ms (was 200-350ms)
+- Improvement: *10-20x faster*
+
+** Depth Freshness
+- Depth updated every 10 frames (configurable)
+- At 30 FPS: depth is max 333ms old
+- Acceptable for navigation (objects don't move that fast)
+
+** CPU/GPU Utilization
+- GPU used by both threads (PyTorch handles scheduling)
+- Minimal CPU overhead (Python GIL not an issue for I/O-bound tasks)
+
+* Trade-offs
+
+** Pros
+- Eliminates blocking on slow operations
+- Maintains low latency for critical path
+- Depth continues updating in background
+- Simple to implement with threading
+
+** Cons
+- Slightly stale depth (1-2 frames old)
+- Thread synchronization overhead (minimal)
+- Complexity in debugging
+
+* When to Use
+
+Async processing is beneficial when:
+1. Operation is slow (>10ms) but not critical for immediate response
+2. Slightly stale data is acceptable
+3. Operation can run independently
+4. Thread safety can be ensured
+
+Perfect for our depth estimation use case!
+
+* Related Notes
+
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - Model running in background
+- [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]] - Speed optimization combined with async
+- [[id:20251019110700-blind_navigation_requirements][Blind Navigation Requirements]] - Why low latency matters
+
+* Implementation
+
+See =AsyncDepthWorker= class in [[file:../app/services/depth_estimator.py][depth_estimator.py:106-196]]
+
+* References
+
+- Python threading: https://docs.python.org/3/library/threading.html
+- Producer-Consumer: https://en.wikipedia.org/wiki/Producer%E2%80%93consumer_problem
+- Thread-safe queues: https://docs.python.org/3/library/queue.html

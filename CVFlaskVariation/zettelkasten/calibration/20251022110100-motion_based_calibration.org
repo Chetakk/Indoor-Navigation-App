@@ -1,0 +1,273 @@
+#+TITLE: Motion-Based Depth Calibration
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: calibration accelerometer step-detection depth-estimation motion-tracking
+#+RELATED: [[file:../depth/20251019110000-monocular_depth_estimation.org][Monocular Depth Estimation]]
+#+RELATED: [[file:../depth/20251019110600-auto_calibration.org][Auto Calibration]]
+
+* Overview
+
+Motion-based calibration uses accelerometer data and step detection to automatically calibrate depth scale WITHOUT requiring object height assumptions. This solves the fundamental problem: not all people, tables, or chairs are the same height!
+
+* The Problem with Traditional Calibration
+
+** Height-Based Assumptions
+Traditional pinhole camera calibration assumes known object heights:
+#+BEGIN_EXAMPLE
+If person bbox height = 400 pixels
+And average person = 1.7 meters tall
+Then calculate distance from geometry
+#+END_EXAMPLE
+
+*Issues:*
+1. Not all people are 1.7m tall (children, adults vary 1.2m - 2.0m)
+2. Tables vary (0.6m - 1.0m)
+3. Chairs vary (0.4m - 0.9m)
+4. Detection might not capture full object (partial occlusion)
+
+** The Insight
+Instead of assuming object sizes, we can measure USER movement:
+- Phones have accelerometers
+- We can detect steps
+- Each step is approximately 0.7 meters
+- Track depth changes as user walks
+- Learn scale factor: real_distance / depth_value
+
+* Accelerometer-Based Step Detection
+
+** Accessing Accelerometer Data
+
+Two APIs available:
+
+*Modern Accelerometer API (Chrome 67+):*
+#+BEGIN_SRC javascript
+const sensor = new Accelerometer({ frequency: 60 });
+sensor.addEventListener('reading', () => {
+    const ax = sensor.x;  // m/s^2
+    const ay = sensor.y;
+    const az = sensor.z;
+});
+sensor.start();
+#+END_SRC
+
+*DeviceMotionEvent (Firefox, Safari, Brave):*
+#+BEGIN_SRC javascript
+window.addEventListener('devicemotion', (event) => {
+    const ax = event.accelerationIncludingGravity.x;
+    const ay = event.accelerationIncludingGravity.y;
+    const az = event.accelerationIncludingGravity.z;
+});
+#+END_SRC
+
+** Step Detection Algorithm
+
+*Peak Detection Approach:*
+1. Calculate acceleration magnitude: sqrt(ax^2 + ay^2 + az^2)
+2. Remove gravity baseline (approximately 9.8 m/s^2)
+3. Look for peaks in acceleration (foot strikes)
+4. Apply cooldown period (300ms) to avoid double-counting
+
+#+BEGIN_SRC javascript
+function detectStep() {
+    const magnitude = Math.sqrt(ax*ax + ay*ay + az*az);
+    const withoutGravity = Math.abs(magnitude - 9.8);
+
+    // Threshold lowered to 0.2 m/s^2 for gentle walking
+    if (isPeak(withoutGravity) && withoutGravity > 0.2) {
+        stepCount++;
+        distanceTraveled += averageStepLength;  // 0.7m
+    }
+}
+#+END_SRC
+
+** Why This Works
+
+Human gait has characteristic acceleration pattern:
+1. *Heel Strike*: Sharp acceleration spike (~2-3 m/s^2)
+2. *Midstance*: Lower acceleration
+3. *Toe Off*: Another acceleration spike
+4. *Swing Phase*: Minimal acceleration
+
+Peak detection identifies heel strikes!
+
+* Velocity and Position Integration
+
+** Double Integration Approach
+
+Acceleration -> Velocity -> Position
+
+#+BEGIN_SRC javascript
+// Integrate acceleration to get velocity
+velocity.x += acceleration.x * dt;
+velocity.y += acceleration.y * dt;
+velocity.z += acceleration.z * dt;
+
+// Integrate velocity to get position
+position.x += velocity.x * dt;
+position.y += velocity.y * dt;
+position.z += velocity.z * dt;
+#+END_SRC
+
+** Drift Problem
+
+*Issue:* Integration accumulates errors (IMU drift)
+- Small measurement errors compound over time
+- After 30 seconds, position can drift by meters!
+
+*Solution:* Damping + Step-based reset
+#+BEGIN_SRC javascript
+// Apply damping to prevent unbounded drift
+const damping = 0.95;
+velocity.x *= damping;
+velocity.y *= damping;
+velocity.z *= damping;
+#+END_SRC
+
+We primarily use step counting (discrete events) rather than continuous integration to avoid drift.
+
+* Depth Scale Calibration
+
+** Learning the Scale Factor
+
+Given:
+- User walks N steps
+- Real distance = N * 0.7 meters
+- Depth value changes from D1 to D2
+- Depth delta = |D2 - D1|
+
+Calculate:
+#+BEGIN_EXAMPLE
+scale = real_distance / depth_delta
+#+END_EXAMPLE
+
+Example:
+- User walks 5 steps = 3.5 meters
+- Depth changes from 100 to 200 units = 100 delta
+- Scale = 3.5 / 100 = 0.035 meters per depth unit
+
+** Confidence Estimation
+
+Multiple samples provide better estimates:
+#+BEGIN_SRC javascript
+// Collect samples
+samples.push({ depthChange, distanceMoved, scale });
+
+// Calculate average scale
+avgScale = sum(samples.scale) / samples.length;
+
+// Calculate variance for confidence
+variance = sum((s.scale - avgScale)^2) / samples.length;
+stdDev = sqrt(variance);
+
+// Confidence: lower variance = higher confidence
+confidence = max(0, min(1, 1 - (stdDev / avgScale)));
+#+END_SRC
+
+*Threshold:* Confidence > 0.7 before using calibration
+
+** Sample Requirements
+
+From motionCalibration.js:
+- Minimum 3 samples before trust
+- Minimum 1 meter movement per sample
+- Minimum 10 depth units change per sample
+- Keep last 10 samples (rolling window)
+
+* Integration with Depth Estimation
+
+** Priority Hierarchy
+
+From depth_estimator.py estimate_distance_with_depth():
+
+1. *Motion-calibrated depth* (highest priority)
+   - Uses learned scale from motion
+   - Confidence from sample consistency
+
+2. *Auto-calibrated depth* (pinhole-based learning)
+   - Uses pinhole estimates to learn scale
+   - Fallback when motion unavailable
+
+3. *Pinhole-only*
+   - For known objects (person, chair, table)
+   - Assumes standard heights
+
+4. *Bbox heuristic*
+   - Worst case fallback
+   - Distance inversely proportional to sqrt(area)
+
+** Sending Calibration to Backend
+
+#+BEGIN_SRC javascript
+// Frontend tracks motion
+const motionScale = motionState.calibration.scale;
+const motionConfidence = motionState.calibration.confidence;
+
+// Send with detection request
+fetch('/detect_image', {
+    method: 'POST',
+    body: JSON.stringify({
+        image: base64Image,
+        motion_scale: motionScale,
+        motion_confidence: motionConfidence
+    })
+});
+#+END_SRC
+
+Backend applies if confidence > 0.1:
+#+BEGIN_SRC python
+if motion_scale is not None and motion_confidence > 0.1:
+    distance = relative_depth * motion_scale
+    return {
+        'distance': distance,
+        'confidence': motion_confidence,
+        'method': 'motion_calibrated'
+    }
+#+END_SRC
+
+* Advantages Over Height-Based Methods
+
+1. *No assumptions*: Works for any object, any height
+2. *Self-calibrating*: Improves with user movement
+3. *User-specific*: Adapts to individual gait
+4. *Universal*: Works indoors/outdoors, any environment
+5. *Continuous improvement*: Rolling window updates scale
+
+* Limitations & Challenges
+
+1. *Requires movement*: User must walk to calibrate
+2. *Step length variation*: Average 0.7m, actual varies 0.5-0.9m
+3. *Phone orientation*: Assumes phone held relatively upright
+4. *Drift accumulation*: Long-term position tracking unreliable
+5. *Stationary calibration*: Cannot calibrate when standing still
+
+* Future Enhancements
+
+** Adaptive Step Length
+Learn user's actual step length from GPS or known distances
+
+** Sensor Fusion
+Combine accelerometer + gyroscope + magnetometer for better tracking
+
+** Zero-Velocity Updates (ZUPT)
+Detect when user is stationary, reset velocity to zero
+
+** Map-Based Corrections
+Use known landmarks to correct accumulated drift
+
+* Implementation Files
+
+- app/static/js/modules/motionCalibration.js - Frontend tracking
+- app/services/depth_estimator.py - Backend integration
+- app/utils/camera_calibration.py - Pinhole fallback
+
+* References
+- [[file:../depth/20251019110000-monocular_depth_estimation.org][Monocular Depth Estimation]]
+- [[file:../depth/20251019110600-auto_calibration.org][Auto Calibration]]
+- [[file:../depth/20251019110100-pinhole_camera_model.org][Pinhole Camera Model]]
+
+* Footnotes
+
+[fn:1] IMU Drift: Inertial Measurement Unit (IMU) drift occurs because accelerometer errors integrate over time, causing position estimates to diverge from true position.
+
+[fn:2] Peak Detection: Identifying local maxima in a signal by comparing each point to its neighbors. Used in signal processing for event detection.
+
+[fn:3] Gait Analysis: Study of human locomotion patterns. Average adult step length is 0.7-0.8 meters, stride length is 1.4-1.6 meters.

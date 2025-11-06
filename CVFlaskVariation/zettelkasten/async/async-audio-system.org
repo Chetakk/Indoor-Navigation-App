@@ -1,0 +1,825 @@
+#+TITLE: Audio Queue State Machine
+#+AUTHOR: CV-Project Documentation
+#+DATE: 2025-10-19
+
+* Overview
+
+The audio system is a safety-critical component that manages speech synthesis for blind navigation. It implements a sophisticated state machine with priority-based queueing and intelligent interruption logic to ensure critical warnings are never missed.
+
+* Design Goals
+
+1. *Safety First*: Critical collision warnings ALWAYS interrupt lower priority audio
+2. *No Audio Spam*: Rate limiting prevents overwhelming the user
+3. *Smart Interrupts*: Avoid repeating the same warning within cooldown period
+4. *Priority Queueing*: Process messages in order of importance
+5. *Graceful Degradation*: Queue announcements when speech is active
+
+* Audio State Machine
+
+** State Definitions
+
+| State             | Description                        | Can Be Interrupted By |
+|-------------------+------------------------------------+-----------------------|
+| IDLE              | No audio playing, ready for next   | N/A                   |
+| SPEAKING_CRITICAL | Playing critical collision warning | Nothing (highest)     |
+| SPEAKING_HIGH     | Playing high priority message      | CRITICAL only         |
+| SPEAKING_NORMAL   | Playing normal announcement        | CRITICAL, HIGH        |
+| SPEAKING_LOW      | Playing low priority info          | CRITICAL, HIGH, NORMAL |
+
+** State Transition Diagram
+
+#+BEGIN_SRC
+                     +---------+
+          +--------->|  IDLE   |<----------+
+          |          +---------+           |
+          |              |                 |
+          |  onend       | speak()         |
+          |              v                 |
+          |      +---------------+         |
+          |      | Select State  |         |
+          |      | Based on      |         |
+          |      | Priority      |         |
+          |      +---------------+         |
+          |       /      |      \          |
+          |      /       |       \         |
+          |     /        |        \        |
+          |    v         v         v       |
+          | CRITICAL   HIGH    NORMAL/LOW  |
+          |    |         |         |       |
+          |    +----+----+---------+       |
+          |         |                      |
+          |         | Interrupt Logic      |
+          |         v                      |
+          |   Check Priority               |
+          |   & Cooldown                   |
+          |         |                      |
+          |   +-----+-----+                |
+          |   |           |                |
+          |   v           v                |
+          | Interrupt   Queue              |
+          |   |                            |
+          +---+----------------------------+
+#+END_SRC
+
+** State Variables
+
+*** Location
+    : app/static/js/modules/audio.js:12-25
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+export const audioState = {
+    // Enable/disable audio globally
+    enabled: true,
+
+    // Message queue (priority-sorted)
+    queue: [],
+
+    // Current playback state
+    isPlaying: false,
+    currentState: 'IDLE',
+    currentPriority: null,
+    currentText: null,
+
+    // Browser speech synthesis API
+    speechSynth: window.speechSynthesis,
+
+    // Rate limiters
+    lastCriticalWarningTime: 0,
+    CRITICAL_COOLDOWN_MS: 3000,      // 3 seconds between critical warnings
+    lastAnySpeechTime: 0,
+    MIN_SPEECH_INTERVAL_MS: 800      // 800ms between any speech
+};
+#+END_SRC
+
+* Priority System
+
+** Priority Levels
+
+| Priority  | Numeric Value | Use Case                           | Example                              |
+|-----------+---------------+------------------------------------+--------------------------------------|
+| critical  | 0             | Immediate collision warning        | "WARNING! Person directly ahead!"    |
+| high      | 1             | Near collision or new object       | "Caution: Wall ahead in 3 seconds"   |
+| normal    | 2             | Object announcements               | "Car 2 meters to your left"          |
+| low       | 3             | Informational messages             | "Detection started"                  |
+
+** Priority Order for Queue Sorting
+
+#+BEGIN_SRC javascript
+const priorityOrder = {
+    critical: 0,
+    high: 1,
+    normal: 2,
+    low: 3
+};
+
+// Sort queue by priority (lower number = higher priority)
+audioState.queue.sort((a, b) =>
+    priorityOrder[a.priority] - priorityOrder[b.priority]
+);
+#+END_SRC
+
+* Main Entry Point: speak()
+
+** Location
+   : app/static/js/modules/audio.js:80-130
+
+** Signature
+   #+BEGIN_SRC javascript
+   function speak(text, priority = 'normal', isCriticalSceneChange = false)
+   #+END_SRC
+
+** Parameters
+
+| Parameter            | Type    | Default  | Description                                |
+|----------------------+---------+----------+--------------------------------------------|
+| text                 | string  | required | Text to speak                              |
+| priority             | string  | 'normal' | Priority level (critical/high/normal/low)  |
+| isCriticalSceneChange | boolean | false    | True if new critical object detected       |
+
+** Flow Diagram
+
+#+BEGIN_SRC
+speak(text, priority, isCriticalSceneChange)
+  |
+  +---> Check if audio enabled
+  |     NO -> Return immediately
+  |     YES -> Continue
+  |
+  +---> Apply GLOBAL rate limiter (800ms)
+  |     BLOCKED -> Queue announcement
+  |     PASSED -> Continue
+  |
+  +---> Check if already speaking
+  |     NO -> speakImmediate()
+  |     YES -> Check if should interrupt
+  |            |
+  |            +---> shouldInterruptAudio()
+  |                  |
+  |                  +---> YES -> Cancel current + speakImmediate()
+  |                  +---> NO -> queueAnnouncement()
+#+END_SRC
+
+** Implementation
+
+#+BEGIN_SRC javascript
+export function speak(text, priority = 'normal', isCriticalSceneChange = false) {
+    if (!audioState.enabled) return;
+
+    // GLOBAL RATE LIMITER: Prevent audio spam
+    const now = Date.now();
+    const timeSinceLastSpeech = now - audioState.lastAnySpeechTime;
+
+    if (timeSinceLastSpeech < audioState.MIN_SPEECH_INTERVAL_MS) {
+        console.log(`RATE LIMITED: Only ${timeSinceLastSpeech}ms since last speech`);
+        queueAnnouncement(text, priority);
+        return;
+    }
+
+    // Check if already speaking
+    const isSpeaking = audioState.speechSynth.speaking || audioState.speechSynth.pending;
+
+    if (isSpeaking) {
+        // Use state machine to determine if should interrupt
+        const shouldInterrupt = shouldInterruptAudio(priority, isCriticalSceneChange, text);
+
+        if (shouldInterrupt) {
+            console.log(`Interrupting for ${priority} priority`);
+            audioState.speechSynth.cancel();
+            audioState.queue = [];  // Clear queue
+            speakImmediate(text, priority);
+            return;
+        } else {
+            console.log(`Queueing ${priority} priority (cannot interrupt)`);
+            queueAnnouncement(text, priority);
+            return;
+        }
+    }
+
+    // Not speaking, speak immediately
+    speakImmediate(text, priority);
+}
+#+END_SRC
+
+* Interrupt Decision Logic: shouldInterruptAudio()
+
+** Location
+   : app/static/js/modules/audio.js:200-280
+
+** Decision Tree
+
+#+BEGIN_SRC
+shouldInterruptAudio(priority, isCriticalSceneChange, text)
+  |
+  +---> Priority = 'critical'?
+  |     YES -> Check critical cooldown (3000ms)
+  |            |
+  |            +---> Within cooldown?
+  |                  YES -> Fuzzy match same warning?
+  |                         YES -> REJECT (duplicate)
+  |                         NO -> ACCEPT (different critical)
+  |                  NO -> ACCEPT (cooldown expired)
+  |     NO -> Continue
+  |
+  +---> Priority = 'high'?
+  |     YES -> Can interrupt 'normal' or 'low'
+  |     NO -> Continue
+  |
+  +---> Priority = 'normal'?
+  |     YES -> Can interrupt 'low' only
+  |     NO -> Continue
+  |
+  +---> Priority = 'low'?
+        YES -> Cannot interrupt anything
+#+END_SRC
+
+** Implementation
+
+#+BEGIN_SRC javascript
+function shouldInterruptAudio(priority, isCriticalSceneChange, text) {
+    const currentPriority = audioState.currentPriority;
+    const currentState = audioState.currentState;
+
+    console.log(`Interrupt check: new=${priority}, current=${currentPriority}, state=${currentState}`);
+
+    // CRITICAL priority
+    if (priority === 'critical') {
+        const timeSinceCritical = Date.now() - audioState.lastCriticalWarningTime;
+
+        // Check if within cooldown period
+        if (timeSinceCritical < audioState.CRITICAL_COOLDOWN_MS) {
+            // Fuzzy match to prevent duplicate warnings
+            const isSameWarning = fuzzyMatchWarning(text, audioState.currentText);
+
+            if (isSameWarning) {
+                console.log('Skipping duplicate critical warning (within cooldown)');
+                return false;
+            }
+        }
+
+        // Different critical warning or cooldown expired
+        audioState.lastCriticalWarningTime = Date.now();
+        return true;  // ALWAYS interrupt for critical
+    }
+
+    // HIGH priority
+    if (priority === 'high') {
+        // Can interrupt 'normal' or 'low', but NOT 'critical' or 'high'
+        if (currentPriority === 'normal' || currentPriority === 'low') {
+            return true;
+        }
+        return false;
+    }
+
+    // NORMAL priority
+    if (priority === 'normal') {
+        // Can only interrupt 'low'
+        if (currentPriority === 'low') {
+            return true;
+        }
+        return false;
+    }
+
+    // LOW priority
+    // Cannot interrupt anything
+    return false;
+}
+#+END_SRC
+
+** Interrupt Matrix
+
+| New Priority | Current: CRITICAL | Current: HIGH | Current: NORMAL | Current: LOW |
+|--------------+-------------------+---------------+-----------------+--------------|
+| critical     | Check cooldown*   | YES           | YES             | YES          |
+| high         | NO                | NO            | YES             | YES          |
+| normal       | NO                | NO            | NO              | YES          |
+| low          | NO                | NO            | NO              | NO           |
+
+*If within 3-second cooldown AND same warning text, reject. Otherwise, interrupt.
+
+* Fuzzy Matching for Duplicate Detection
+
+** Location
+   : app/static/js/modules/audio.js:300-320
+
+** Purpose
+   Prevent announcing "WARNING! Person directly ahead!" multiple times within 3 seconds.
+
+** Algorithm
+   1. Extract object class name from warning text
+   2. Compare with previous warning's class name
+   3. If same class, consider it a duplicate
+
+** Implementation
+
+#+BEGIN_SRC javascript
+function fuzzyMatchWarning(newText, oldText) {
+    if (!oldText) return false;
+
+    // Extract class name (first word after common prefixes)
+    const extractClass = (text) => {
+        const cleaned = text
+            .toLowerCase()
+            .replace(/warning!?/i, '')
+            .replace(/caution:?/i, '')
+            .replace(/directly/i, '')
+            .replace(/ahead/i, '')
+            .trim();
+
+        // Get first word (likely the object class)
+        const match = cleaned.match(/^(\w+)/);
+        return match ? match[1] : '';
+    };
+
+    const newClass = extractClass(newText);
+    const oldClass = extractClass(oldText);
+
+    console.log(`Fuzzy match: "${newClass}" vs "${oldClass}"`);
+
+    return newClass === oldClass && newClass !== '';
+}
+#+END_SRC
+
+** Examples
+
+| New Text                           | Old Text                           | Match? | Reason              |
+|------------------------------------+------------------------------------+--------+---------------------|
+| "WARNING! Person directly ahead!"  | "WARNING! Person directly ahead!"  | YES    | Same class (person) |
+| "WARNING! Person directly ahead!"  | "WARNING! Car directly ahead!"     | NO     | Different class     |
+| "Caution: Wall ahead in 3 seconds" | "Caution: Wall ahead in 4 seconds" | YES    | Same class (wall)   |
+| "Person 2m ahead"                  | "Person 3m ahead"                  | YES    | Same class (person) |
+
+* Immediate Playback: speakImmediate()
+
+** Location
+   : app/static/js/modules/audio.js:140-190
+
+** Implementation
+
+#+BEGIN_SRC javascript
+function speakImmediate(text, priority) {
+    console.log(`Speaking immediately: "${text}" [${priority}]`);
+
+    const utterance = new SpeechSynthesisUtterance(text);
+
+    // Adjust speech parameters based on priority
+    if (priority === 'critical') {
+        utterance.rate = 1.2;   // Fastest (20% faster)
+        utterance.volume = 1.0; // Loudest
+        utterance.pitch = 1.1;  // Slightly higher pitch
+    } else if (priority === 'high') {
+        utterance.rate = 1.1;   // Fast (10% faster)
+        utterance.volume = 1.0;
+        utterance.pitch = 1.0;
+    } else if (priority === 'normal') {
+        utterance.rate = 0.95;  // Slightly slower (5%)
+        utterance.volume = 0.9;
+        utterance.pitch = 1.0;
+    } else {  // low
+        utterance.rate = 0.9;   // Slower (10% slower)
+        utterance.volume = 0.8; // Quieter
+        utterance.pitch = 0.95;
+    }
+
+    // Update state machine
+    audioState.isPlaying = true;
+    audioState.currentPriority = priority;
+    audioState.currentText = text;
+    audioState.currentState = `SPEAKING_${priority.toUpperCase()}`;
+
+    // Record timestamp
+    audioState.lastAnySpeechTime = Date.now();
+
+    if (priority === 'critical') {
+        audioState.lastCriticalWarningTime = Date.now();
+    }
+
+    // Register completion handler
+    utterance.onend = () => {
+        console.log(`Finished speaking: "${text}"`);
+
+        // Transition back to IDLE
+        audioState.isPlaying = false;
+        audioState.currentPriority = null;
+        audioState.currentText = null;
+        audioState.currentState = 'IDLE';
+
+        // Process next message in queue after delay
+        setTimeout(() => {
+            processAudioQueue();
+        }, TimingConfig.audio.queueProcessDelay);  // 200ms default
+    };
+
+    // Speak the utterance
+    audioState.speechSynth.speak(utterance);
+}
+#+END_SRC
+
+** Speech Parameter Tuning
+
+| Priority  | Rate | Volume | Pitch | Rationale                            |
+|-----------+------+--------+-------+--------------------------------------|
+| critical  | 1.2  | 1.0    | 1.1   | Fast, loud, urgent tone              |
+| high      | 1.1  | 1.0    | 1.0   | Slightly fast, clear                 |
+| normal    | 0.95 | 0.9    | 1.0   | Comfortable listening speed          |
+| low       | 0.9  | 0.8    | 0.95  | Slower, quieter, less intrusive      |
+
+* Queue Management
+
+** Queueing Announcements
+
+*** Location
+    : app/static/js/modules/audio.js:330-350
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+function queueAnnouncement(text, priority) {
+    console.log(`Queueing: "${text}" [${priority}]`);
+
+    // Check for duplicates in queue
+    const isDuplicate = audioState.queue.some(item =>
+        item.text === text && item.priority === priority
+    );
+
+    if (isDuplicate) {
+        console.log('Skipping duplicate announcement in queue');
+        return;
+    }
+
+    // Add to queue
+    audioState.queue.push({ text, priority, timestamp: Date.now() });
+
+    // Limit queue size (prevent unbounded growth)
+    if (audioState.queue.length > 10) {
+        console.warn('Queue full, removing oldest non-critical');
+
+        // Remove oldest non-critical message
+        const nonCriticalIndex = audioState.queue.findIndex(
+            item => item.priority !== 'critical'
+        );
+
+        if (nonCriticalIndex !== -1) {
+            audioState.queue.splice(nonCriticalIndex, 1);
+        }
+    }
+}
+#+END_SRC
+
+** Processing Queue
+
+*** Location
+    : app/static/js/modules/audio.js:360-400
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+function processAudioQueue() {
+    if (!audioState.enabled || audioState.isPlaying || audioState.queue.length === 0) {
+        return;
+    }
+
+    console.log(`Processing queue (${audioState.queue.length} items)`);
+
+    // Sort by priority (critical -> high -> normal -> low)
+    const priorityOrder = { critical: 0, high: 1, normal: 2, low: 3 };
+    audioState.queue.sort((a, b) =>
+        priorityOrder[a.priority] - priorityOrder[b.priority]
+    );
+
+    // Get highest priority message
+    const announcement = audioState.queue.shift();
+
+    console.log(`Dequeued: "${announcement.text}" [${announcement.priority}]`);
+
+    // If critical, clear remaining queue and cancel current speech
+    if (announcement.priority === 'critical') {
+        console.log('Critical announcement - clearing queue and interrupting');
+        audioState.queue = [];
+        audioState.speechSynth.cancel();
+    }
+
+    // Speak the announcement
+    speakImmediate(announcement.text, announcement.priority);
+}
+#+END_SRC
+
+** Queue Behavior
+
+*** Queue Sorting
+    - Always sorted by priority before processing
+    - Critical messages always processed first
+    - FIFO within same priority level
+
+*** Queue Size Limiting
+    - Maximum 10 messages in queue
+    - When full, remove oldest *non-critical* message
+    - Critical messages are never removed
+
+*** Queue Clearing
+    - Cleared on critical interrupt
+    - Cleared on scene change with critical collision
+    - Cleared when user stops detection
+
+* Rate Limiting
+
+** Global Rate Limiter
+
+*** Purpose
+    Prevent overwhelming the user with back-to-back announcements.
+
+*** Interval
+    800ms minimum between ANY speech (configurable in [timingConfig.js])
+
+*** Implementation
+    #+BEGIN_SRC javascript
+    const timeSinceLastSpeech = Date.now() - audioState.lastAnySpeechTime;
+
+    if (timeSinceLastSpeech < 800) {
+        queueAnnouncement(text, priority);  // Queue instead of speaking
+        return;
+    }
+
+    audioState.lastAnySpeechTime = Date.now();
+    speakImmediate(text, priority);
+    #+END_SRC
+
+** Critical Warning Cooldown
+
+*** Purpose
+    Prevent repeating the same critical warning (e.g., "Person ahead!") every 30ms.
+
+*** Interval
+    3000ms minimum between critical warnings *for the same object class*
+
+*** Implementation
+    #+BEGIN_SRC javascript
+    if (priority === 'critical') {
+        const timeSinceCritical = Date.now() - audioState.lastCriticalWarningTime;
+
+        if (timeSinceCritical < 3000) {
+            // Fuzzy match to check if same warning
+            if (fuzzyMatchWarning(text, audioState.currentText)) {
+                return false;  // Reject duplicate
+            }
+        }
+
+        audioState.lastCriticalWarningTime = Date.now();
+    }
+    #+END_SRC
+
+** Per-Class Announcement Interval
+
+*** Purpose
+    Dynamically adjust announcement frequency based on distance.
+
+*** Location
+    : app/static/js/modules/detection.js:350-380
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+const lastAnnouncement = {};  // Track last announcement time per class
+
+// Determine announcement interval based on distance
+let announcementInterval = 5000;  // Default: 5 seconds
+
+if (distanceCategory === 'immediate') {
+    announcementInterval = 1000;  // 1 second (critical)
+} else if (distanceCategory === 'near') {
+    announcementInterval = 2000;  // 2 seconds
+} else if (distanceCategory === 'medium') {
+    announcementInterval = 3000;  // 3 seconds
+}
+
+// Check if enough time has passed
+const lastTime = lastAnnouncement[className] || 0;
+if (Date.now() - lastTime > announcementInterval) {
+    queueAnnouncement(`${className} ${distance} to your ${direction}`, priority);
+    lastAnnouncement[className] = Date.now();
+}
+#+END_SRC
+
+*** Interval Table
+
+| Distance Category | Interval | Use Case                    |
+|-------------------+----------+-----------------------------|
+| immediate (<1m)   | 1000ms   | Critical proximity          |
+| near (1-2m)       | 2000ms   | Important awareness         |
+| medium (2-4m)     | 3000ms   | Moderate awareness          |
+| far (>4m)         | 5000ms   | Informational only          |
+
+* Utility Functions
+
+** clearAudioQueue()
+
+*** Purpose
+    Clear all queued announcements and cancel current speech.
+
+*** Location
+    : app/static/js/modules/audio.js:410-420
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+export function clearAudioQueue() {
+    console.log('Clearing audio queue');
+
+    audioState.queue = [];
+    audioState.speechSynth.cancel();
+
+    // Reset state
+    audioState.isPlaying = false;
+    audioState.currentPriority = null;
+    audioState.currentText = null;
+    audioState.currentState = 'IDLE';
+}
+#+END_SRC
+
+** toggleAudio()
+
+*** Purpose
+    Enable or disable audio globally.
+
+*** Implementation
+
+#+BEGIN_SRC javascript
+export function toggleAudio(enabled) {
+    audioState.enabled = enabled;
+
+    if (!enabled) {
+        clearAudioQueue();
+    }
+
+    console.log(`Audio ${enabled ? 'enabled' : 'disabled'}`);
+}
+#+END_SRC
+
+* Integration with Detection System
+
+** Collision Warnings
+
+*** Location
+    : app/static/js/modules/detection.js:320-360
+
+*** Flow
+
+#+BEGIN_SRC
+checkCollisionWarnings(detections)
+  |
+  +---> For each detection with collision data:
+        |
+        +---> collision_severity = 'high'?
+        |     YES -> speak(warningText, 'critical', true)
+        |     NO -> Continue
+        |
+        +---> collision_severity = 'medium'?
+              YES -> speak(warningText, 'high')
+              NO -> Continue (low severity, no warning)
+#+END_SRC
+
+** Scene Change Announcements
+
+*** Location
+    : app/static/js/modules/detection.js:280-320
+
+*** Flow
+
+#+BEGIN_SRC
+announceDetections(detections, sceneAnalysis)
+  |
+  +---> sceneAnalysis.criticalChange = true?
+  |     YES -> clearAudioQueue()
+  |            (Interrupt everything for critical changes)
+  |     NO -> Continue
+  |
+  +---> For each unique object class:
+        |
+        +---> Check per-class announcement interval
+        |     BLOCKED -> Skip
+        |     PASSED -> Continue
+        |
+        +---> Determine priority based on distance:
+        |     - immediate (<1m): 'high'
+        |     - near/medium/far: 'normal'
+        |
+        +---> queueAnnouncement(text, priority)
+#+END_SRC
+
+* Performance Characteristics
+
+| Operation                | Latency   | Notes                            |
+|--------------------------+-----------+----------------------------------|
+| speak() decision         | <1ms      | State checks only                |
+| speakImmediate()         | 50-200ms  | Browser speech synthesis startup |
+| processAudioQueue()      | <1ms      | Sort + dequeue                   |
+| shouldInterruptAudio()   | <1ms      | Priority comparison              |
+| fuzzyMatchWarning()      | <1ms      | String operations                |
+| Queue sort (10 items)    | <0.5ms    | JavaScript Array.sort()          |
+
+* Common Pitfalls and Solutions
+
+** Pitfall 1: Audio Spam from Rapid Detections
+
+*Problem:* Detection runs at 10 FPS, each frame tries to announce
+
+#+BEGIN_SRC javascript
+// BAD: Announces every frame (100 times/second)
+detections.forEach(d => speak(d.class_name));
+#+END_SRC
+
+*Solution:* Use per-class interval tracking + global rate limiter
+
+#+BEGIN_SRC javascript
+// GOOD: Respects 800ms global + per-class intervals
+const lastTime = lastAnnouncement[className] || 0;
+if (Date.now() - lastTime > announcementInterval) {
+    speak(announcement);
+    lastAnnouncement[className] = Date.now();
+}
+#+END_SRC
+
+** Pitfall 2: Repeating Critical Warnings
+
+*Problem:* "WARNING! Person ahead!" announced every 30ms
+
+#+BEGIN_SRC javascript
+// BAD: No cooldown for critical warnings
+if (collision.severity === 'high') {
+    speak(warningText, 'critical');  // Repeats every frame!
+}
+#+END_SRC
+
+*Solution:* Fuzzy match + 3-second cooldown
+
+#+BEGIN_SRC javascript
+// GOOD: Only announce if different warning or cooldown expired
+if (priority === 'critical') {
+    const timeSinceCritical = Date.now() - lastCriticalWarningTime;
+
+    if (timeSinceCritical < 3000 &&
+        fuzzyMatchWarning(text, currentText)) {
+        return;  // Skip duplicate
+    }
+
+    speak(warningText, 'critical');
+}
+#+END_SRC
+
+** Pitfall 3: Queue Unbounded Growth
+
+*Problem:* Queue grows indefinitely if announcements faster than playback
+
+#+BEGIN_SRC javascript
+// BAD: No size limit
+audioState.queue.push(announcement);  // Can grow to 1000s of items
+#+END_SRC
+
+*Solution:* Limit queue to 10 items, remove oldest non-critical
+
+#+BEGIN_SRC javascript
+// GOOD: Bounded queue with eviction
+if (audioState.queue.length > 10) {
+    const nonCriticalIndex = audioState.queue.findIndex(
+        item => item.priority !== 'critical'
+    );
+    audioState.queue.splice(nonCriticalIndex, 1);
+}
+#+END_SRC
+
+* Configuration
+
+** Timing Configuration
+
+*** Location
+    : app/static/js/modules/timingConfig.js
+
+*** Constants
+
+#+BEGIN_SRC javascript
+export const TimingConfig = {
+    audio: {
+        queueProcessDelay: 200,        // Delay between queue processing (ms)
+        minSpeechInterval: 800,        // Minimum between any speech (ms)
+        criticalCooldown: 3000         // Cooldown for critical warnings (ms)
+    },
+    collision: {
+        immediateAnnouncementInterval: 1000,  // <1m
+        nearAnnouncementInterval: 2000,       // 1-2m
+        mediumAnnouncementInterval: 3000,     // 2-4m
+        farAnnouncementInterval: 5000         // >4m
+    }
+};
+#+END_SRC
+
+* Related Documentation
+
+- [[file:async-architecture.org][Overall Async Architecture]]
+- [[file:async-frontend-patterns.org][Frontend Async Patterns]]
+- [[file:async-synchronization.org][Synchronization Mechanisms]]
+
+* See Also
+
+- Web Speech API: https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API
+- SpeechSynthesisUtterance: https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesisUtterance

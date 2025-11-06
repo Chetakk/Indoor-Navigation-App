@@ -1,0 +1,575 @@
+#+TITLE: Async Frontend Patterns
+#+AUTHOR: CV-Project Documentation
+#+DATE: 2025-10-19
+
+* Overview
+
+The frontend JavaScript uses async/await patterns with sophisticated request tracking and abort handling to ensure responsive, real-time detection. The key challenge is preventing *stale response processing* when newer data arrives while older requests are still in flight.
+
+* Request-Response Cycle with Request ID Tracking
+
+** Location
+   : app/static/js/modules/camera.js:150-250
+
+** Design Pattern
+   Monotonically increasing request IDs with double-check validation to filter stale responses.
+
+** Implementation
+
+#+BEGIN_SRC javascript
+// Global state
+let requestIdCounter = 0;
+let latestRequestId = 0;
+let isProcessingRequest = false;
+let currentAbortController = null;
+
+export function startRealtimeAnalysis() {
+    detectionInterval = setInterval(async () => {
+        // 1. Check if already processing
+        if (!detectionActive || isProcessingRequest) {
+            console.log('Skipping frame - detection inactive or already processing');
+            return;
+        }
+
+        try {
+            isProcessingRequest = true;
+
+            // 2. Assign unique request ID to track responses
+            requestIdCounter++;
+            const thisRequestId = requestIdCounter;
+            latestRequestId = thisRequestId;
+
+            console.log(`Starting detection request #${thisRequestId}`);
+
+            // 3. Create new abort controller for this request
+            currentAbortController = new AbortController();
+
+            // 4. Capture frame and encode to JPEG
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = video.videoWidth || 640;
+            tempCanvas.height = video.videoHeight || 480;
+            tempCtx.drawImage(video, 0, 0);
+            const imageData = tempCanvas.toDataURL('image/jpeg', 0.8);
+
+            // 5. Get gyroscope data
+            const currentOrientation = getCurrentOrientation();
+
+            // 6. Prepare request payload
+            const requestData = {
+                image: imageData,
+                tracking_enabled: trackingEnabled,
+                orientation: currentOrientation,
+                motion_calibration: motionState.calibration
+            };
+
+            // 7. Set timeout for request
+            const timeoutId = setTimeout(() => {
+                if (currentAbortController) {
+                    console.warn(`Request #${thisRequestId} timeout - aborting`);
+                    currentAbortController.abort();
+                }
+            }, TimingConfig.detection.requestTimeout);  // 5000ms default
+
+            // 8. Send request with abort signal
+            const response = await fetch('/detect_image', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestData),
+                signal: currentAbortController.signal
+            });
+
+            clearTimeout(timeoutId);
+
+            // 9. FIRST STALE CHECK: After response received
+            if (thisRequestId !== latestRequestId) {
+                console.warn(`Ignoring stale response #${thisRequestId} (latest: ${latestRequestId})`);
+                return;
+            }
+
+            // 10. Parse JSON response
+            const data = await response.json();
+
+            // 11. SECOND STALE CHECK: After JSON parsing
+            if (thisRequestId !== latestRequestId) {
+                console.warn(`Ignoring stale response after parsing #${thisRequestId}`);
+                return;
+            }
+
+            // 12. Process successful response
+            if (data.success) {
+                console.log(`Processing valid response #${thisRequestId}`);
+
+                // Analyze scene for smart announcements
+                const sceneAnalysis = analyzeSceneChange(data.detections);
+
+                if (sceneAnalysis.shouldAnnounce) {
+                    if (sceneAnalysis.criticalChange) {
+                        clearAudioQueue();  // Interrupt for critical changes
+                    }
+                }
+
+                drawDetections(data.detections);
+                announceDetections(data.detections, sceneAnalysis);
+            } else {
+                console.error('Detection failed:', data.error);
+            }
+
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.log('Request aborted (timeout or manual cancellation)');
+            } else {
+                console.error('Detection error:', error);
+                showError('Detection failed. Please try again.');
+            }
+        } finally {
+            // 13. Always cleanup
+            isProcessingRequest = false;
+            currentAbortController = null;
+        }
+    }, TimingConfig.detection.loopInterval);  // 30-60ms interval
+}
+#+END_SRC
+
+** Flow Diagram
+
+#+BEGIN_SRC
+Time -->
+Request #1 starts (ID=1, latestRequestId=1)
+  |
+  +--- 50ms --- Request #2 starts (ID=2, latestRequestId=2)
+  |              |
+  |              +--- 100ms --- Request #2 completes
+  |                             - Check: thisRequestId (2) === latestRequestId (2) ✓
+  |                             - Process response
+  |
+  +--- 200ms --- Request #1 completes (LATE!)
+                 - Check: thisRequestId (1) !== latestRequestId (2) ✗
+                 - Ignore stale response
+#+END_SRC
+
+** Key Features
+
+*** Monotonic Request IDs
+    - =requestIdCounter= always increases
+    - Each request gets unique ID
+    - =latestRequestId= tracks most recent request
+
+*** Double-Check Validation
+    - Check #1: After =fetch()= completes
+    - Check #2: After =response.json()= completes
+    - Necessary because async operations can be interrupted
+
+*** AbortController Integration
+    - Create new controller for each request
+    - Timeout triggers =abort()= after 5 seconds
+    - Cleanup in =finally= block prevents memory leaks
+
+*** Request Coalescing
+    - =isProcessingRequest= flag prevents overlapping requests
+    - Skip frame if previous request still in flight
+    - Prevents request queue buildup
+
+* Scene Change Detection
+
+** Location
+   : app/static/js/modules/detection.js:180-250
+
+** Design Pattern
+   Hash-based scene fingerprinting with critical change classification.
+
+** Implementation
+
+#+BEGIN_SRC javascript
+let previousSceneHash = null;
+let previousDetections = [];
+let previousTrackIds = new Set();
+let currentTrackIds = new Set();
+
+function generateSceneHash(detections) {
+    if (!detections || detections.length === 0) {
+        return 'empty_scene';
+    }
+
+    // Create sorted list of detected classes
+    const classes = detections
+        .map(d => d.class_name)
+        .sort()
+        .join(',');
+
+    // Create sorted list of track IDs (if available)
+    const trackIds = detections
+        .filter(d => d.track_id !== undefined)
+        .map(d => d.track_id)
+        .sort()
+        .join(',');
+
+    return `${classes}|${trackIds}`;
+}
+
+export function analyzeSceneChange(currentDetections) {
+    const currentHash = generateSceneHash(currentDetections);
+
+    // Update track ID sets
+    currentTrackIds = new Set(
+        currentDetections
+            .filter(d => d.track_id !== undefined)
+            .map(d => d.track_id)
+    );
+
+    // First frame or empty previous scene
+    if (!previousSceneHash || previousSceneHash === 'empty_scene') {
+        previousSceneHash = currentHash;
+        previousDetections = currentDetections;
+        previousTrackIds = new Set(currentTrackIds);
+        return {
+            shouldAnnounce: currentHash !== 'empty_scene',
+            changeType: 'initial_scene',
+            criticalChange: false
+        };
+    }
+
+    // No change detected
+    if (currentHash === previousSceneHash) {
+        return {
+            shouldAnnounce: false,
+            changeType: 'no_change',
+            criticalChange: false
+        };
+    }
+
+    // Analyze what changed
+    const hasCriticalCollision = currentDetections.some(d =>
+        d.collision && d.collision.collision_severity === 'high'
+    );
+
+    const newObjects = [...currentTrackIds].filter(id => !previousTrackIds.has(id));
+    const lostObjects = [...previousTrackIds].filter(id => !currentTrackIds.has(id));
+
+    // Determine if critical change
+    let criticalChange = false;
+    let changeType = 'minor_change';
+
+    if (hasCriticalCollision) {
+        changeType = 'critical_collision';
+        criticalChange = true;
+    } else if (newObjects.length > 0) {
+        changeType = 'new_objects';
+        criticalChange = true;  // New objects always critical
+    } else if (lostObjects.length > 0) {
+        changeType = 'lost_objects';
+        criticalChange = false;  // Lost objects less critical
+    }
+
+    // Update state
+    previousSceneHash = currentHash;
+    previousDetections = currentDetections;
+    previousTrackIds = new Set(currentTrackIds);
+
+    return {
+        shouldAnnounce: true,
+        changeType: changeType,
+        criticalChange: criticalChange,
+        newObjectCount: newObjects.length,
+        lostObjectCount: lostObjects.length
+    };
+}
+#+END_SRC
+
+** Change Classification
+
+| Change Type         | Critical? | Trigger                           | Action                |
+|---------------------+-----------+-----------------------------------+-----------------------|
+| initial_scene       | No        | First detection frame             | Announce all objects  |
+| no_change           | No        | Same scene hash                   | Skip announcement     |
+| critical_collision  | Yes       | Collision severity = 'high'       | Clear queue, announce |
+| new_objects         | Yes       | New track IDs appeared            | Interrupt, announce   |
+| lost_objects        | No        | Track IDs disappeared             | Queue announcement    |
+| minor_change        | No        | Hash changed, no critical trigger | Queue announcement    |
+
+** Scene Hash Format
+
+#+BEGIN_SRC
+"class1,class2,class3|trackId1,trackId2,trackId3"
+
+Examples:
+- "person,car|0,1" - Person (track 0) and car (track 1)
+- "person,person,car|0,1,2" - Two persons and one car
+- "empty_scene" - No detections
+#+END_SRC
+
+* Announcement System
+
+** Location
+   : app/static/js/modules/detection.js:280-380
+
+** Design Pattern
+   Priority-based announcement with dynamic timing based on distance.
+
+** Implementation
+
+#+BEGIN_SRC javascript
+const lastAnnouncement = {};  // Track last announcement time per class
+
+export function announceDetections(detections, sceneAnalysis = null) {
+    if (!audioState.enabled || detections.length === 0) return;
+
+    // 1. ALWAYS check collisions first (highest priority)
+    checkCollisionWarnings(detections);
+
+    // 2. Announce tracking events (new/lost tracks)
+    announceTrackingEvents(detections);
+
+    // 3. Announce objects with distance and direction
+    // Group by class and find closest of each type
+    const groupedDetections = {};
+    detections.forEach(detection => {
+        if (detection.confidence < MIN_CONFIDENCE_THRESHOLD) return;
+
+        const className = detection.class_name;
+        const distanceInfo = estimateDistance(detection.bbox, className);
+
+        // Keep only closest detection of each class
+        if (!groupedDetections[className] ||
+            distanceInfo.ratio > groupedDetections[className].distanceInfo.ratio) {
+            groupedDetections[className] = { ...detection, distanceInfo };
+        }
+    });
+
+    // 4. Create announcements for each unique object
+    const announcements = [];
+    Object.keys(groupedDetections).forEach(className => {
+        const detection = groupedDetections[className];
+        const lastTime = lastAnnouncement[className] || 0;
+
+        // Dynamic announcement interval based on distance
+        let announcementInterval = TimingConfig.collision.farAnnouncementInterval;  // 5000ms
+
+        if (detection.distanceInfo.category === 'immediate') {
+            announcementInterval = TimingConfig.collision.immediateAnnouncementInterval;  // 1000ms
+        } else if (detection.distanceInfo.category === 'near') {
+            announcementInterval = TimingConfig.collision.nearAnnouncementInterval;  // 2000ms
+        } else if (detection.distanceInfo.category === 'medium') {
+            announcementInterval = TimingConfig.collision.mediumAnnouncementInterval;  // 3000ms
+        }
+
+        // Only announce if enough time has passed
+        if (Date.now() - lastTime > announcementInterval) {
+            const announcement = `${className} ${detection.distanceInfo.distance} to your ${detection.distanceInfo.direction}`;
+
+            announcements.push({
+                text: announcement,
+                priority: detection.distanceInfo.category === 'immediate' ? 'high' : 'normal'
+            });
+
+            lastAnnouncement[className] = Date.now();
+        }
+    });
+
+    // 5. Sort by priority (high first)
+    announcements.sort((a, b) => a.priority === 'high' ? -1 : 1);
+
+    // 6. Queue first announcement only (prevent audio flood)
+    if (announcements.length > 0) {
+        queueAnnouncement(announcements[0].text, announcements[0].priority);
+    }
+}
+#+END_SRC
+
+** Dynamic Announcement Timing
+
+| Distance Category | Interval | Example              | Rationale                      |
+|-------------------+----------+----------------------+--------------------------------|
+| immediate (<1m)   | 1000ms   | "Person 0.5m ahead"  | Critical - announce frequently |
+| near (1-2m)       | 2000ms   | "Car 1.5m to left"   | Important - moderate frequency |
+| medium (2-4m)     | 3000ms   | "Wall 3m ahead"      | Aware - slower frequency       |
+| far (>4m)         | 5000ms   | "Person 5m to right" | Informational - slow frequency |
+
+* Collision Warning System
+
+** Location
+   : app/static/js/modules/detection.js:320-360
+
+** Implementation
+
+#+BEGIN_SRC javascript
+function checkCollisionWarnings(detections) {
+    detections.forEach(detection => {
+        if (!detection.collision) return;
+
+        const collision = detection.collision;
+
+        // Only warn for immediate/near collisions
+        if (collision.collision_severity === 'high') {
+            const warningText = `WARNING! ${detection.class_name} directly ahead! ${collision.estimated_time_seconds} seconds`;
+            speak(warningText, 'critical', true);  // Critical priority, scene change
+        } else if (collision.collision_severity === 'medium') {
+            const warningText = `Caution: ${detection.class_name} ahead in ${collision.estimated_time_seconds} seconds`;
+            speak(warningText, 'high');
+        }
+    });
+}
+#+END_SRC
+
+** Collision Severity Mapping
+
+| Severity | Time to Collision | Priority   | Audio Behavior         |
+|----------+-------------------+------------+------------------------|
+| high     | <2 seconds        | critical   | Interrupt everything   |
+| medium   | 2-5 seconds       | high       | Interrupt normal/low   |
+| low      | >5 seconds        | normal     | Queue normally         |
+
+* Abort and Cleanup Patterns
+
+** Stopping Detection
+
+#+BEGIN_SRC javascript
+export function stopRealtimeAnalysis() {
+    console.log('Stopping real-time analysis...');
+
+    // Stop interval loop
+    if (detectionInterval) {
+        clearInterval(detectionInterval);
+        detectionInterval = null;
+    }
+
+    // Abort pending request
+    if (currentAbortController) {
+        currentAbortController.abort();
+        currentAbortController = null;
+    }
+
+    // Reset state
+    isProcessingRequest = false;
+    detectionActive = false;
+
+    // Clear canvas
+    clearCanvas();
+
+    console.log('Real-time analysis stopped');
+}
+#+END_SRC
+
+** Cleanup on Page Unload
+
+#+BEGIN_SRC javascript
+window.addEventListener('beforeunload', () => {
+    stopRealtimeAnalysis();
+
+    // Stop audio
+    if (audioState.speechSynth) {
+        audioState.speechSynth.cancel();
+    }
+
+    // Stop camera stream
+    if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+    }
+});
+#+END_SRC
+
+* Common Pitfalls and Solutions
+
+** Pitfall 1: Race Condition with Stale Responses
+
+*Problem:* Processing older response after newer response arrives
+
+#+BEGIN_SRC javascript
+// BAD: No request ID tracking
+const response = await fetch('/detect_image', ...);
+const data = await response.json();
+processDetections(data);  // May be stale!
+#+END_SRC
+
+*Solution:* Double-check request ID after each async operation
+
+#+BEGIN_SRC javascript
+// GOOD: Verify request ID twice
+const thisRequestId = ++requestIdCounter;
+latestRequestId = thisRequestId;
+
+const response = await fetch('/detect_image', ...);
+if (thisRequestId !== latestRequestId) return;  // Check #1
+
+const data = await response.json();
+if (thisRequestId !== latestRequestId) return;  // Check #2
+
+processDetections(data);  // Guaranteed to be latest
+#+END_SRC
+
+** Pitfall 2: Memory Leak from Uncancelled Requests
+
+*Problem:* Timeout timers not cleared on abort
+
+#+BEGIN_SRC javascript
+// BAD: Timeout timer never cleared
+setTimeout(() => abortController.abort(), 5000);
+const response = await fetch(..., { signal: abortController.signal });
+#+END_SRC
+
+*Solution:* Always clear timeout in both success and error paths
+
+#+BEGIN_SRC javascript
+// GOOD: Clear timeout after response
+const timeoutId = setTimeout(() => abortController.abort(), 5000);
+try {
+    const response = await fetch(..., { signal: abortController.signal });
+    clearTimeout(timeoutId);  // ✓
+} catch (error) {
+    clearTimeout(timeoutId);  // ✓
+}
+#+END_SRC
+
+** Pitfall 3: Overlapping Detection Requests
+
+*Problem:* Starting new request before previous completes
+
+#+BEGIN_SRC javascript
+// BAD: No processing flag
+setInterval(async () => {
+    const response = await fetch('/detect_image', ...);  // May overlap!
+}, 30);
+#+END_SRC
+
+*Solution:* Use processing flag to skip frames
+
+#+BEGIN_SRC javascript
+// GOOD: Skip if already processing
+setInterval(async () => {
+    if (isProcessingRequest) {
+        console.log('Skipping frame - already processing');
+        return;
+    }
+
+    isProcessingRequest = true;
+    try {
+        const response = await fetch('/detect_image', ...);
+        // Process...
+    } finally {
+        isProcessingRequest = false;  // Always reset
+    }
+}, 30);
+#+END_SRC
+
+* Performance Characteristics
+
+| Operation               | Latency   | Frequency | Optimization               |
+|-------------------------+-----------+-----------+----------------------------|
+| Fetch request           | 100-250ms | 4-10 FPS  | Request coalescing         |
+| JSON parsing            | 1-5ms     | N/A       | Native browser performance |
+| Scene hash generation   | <1ms      | 10 FPS    | String concatenation       |
+| Track ID comparison     | <1ms      | 10 FPS    | Set operations             |
+| Canvas drawing          | 5-10ms    | 10 FPS    | Canvas2D API               |
+| Request ID validation   | <0.1ms    | 20 FPS    | Integer comparison         |
+
+* Related Documentation
+
+- [[file:async-architecture.org][Overall Async Architecture]]
+- [[file:async-audio-system.org][Audio Queue State Machine]]
+- [[file:async-synchronization.org][Synchronization Mechanisms]]
+
+* See Also
+
+- MDN AbortController: https://developer.mozilla.org/en-US/docs/Web/API/AbortController
+- MDN Fetch API: https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API
+- JavaScript async/await: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function

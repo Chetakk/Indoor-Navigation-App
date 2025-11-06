@@ -1,0 +1,411 @@
+#+TITLE: ONNX Model Format - Universal Neural Network Interchange
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: onnx model-format interoperability export deployment
+#+RELATED: [[file:../optimization/20251022110000-tensorrt_optimization.org][TensorRT Optimization]]
+#+RELATED: [[file:../yolo/20251015130000-yolo_architecture_fundamentals.org][YOLO Architecture Fundamentals]]
+
+* Overview
+
+ONNX (Open Neural Network Exchange) is an open format for representing machine learning models. Enables interoperability between different frameworks and deployment targets.
+
+* Why ONNX?
+
+** The Framework Lock-In Problem
+
+*Before ONNX:*
+- Train model in PyTorch
+- Want to deploy on mobile (CoreML)
+- Want to optimize with TensorRT
+- Want to run in browser (ONNX.js)
+
+*Result:* Need to manually convert between formats, losing layers or accuracy
+
+*With ONNX:*
+#+BEGIN_EXAMPLE
+PyTorch -> ONNX -> TensorRT
+PyTorch -> ONNX -> CoreML
+PyTorch -> ONNX -> ONNX Runtime
+PyTorch -> ONNX -> OpenVINO
+#+END_EXAMPLE
+
+ONNX acts as universal intermediate representation!
+
+* ONNX in CV Project
+
+** Conversion Pipeline
+
+#+BEGIN_EXAMPLE
+1. YOLOv8 PyTorch (.pt)
+       |
+       v
+2. ONNX (.onnx)
+       |
+       v
+3. TensorRT Engine (.engine)
+#+END_EXAMPLE
+
+** PyTorch to ONNX
+
+#+BEGIN_SRC python
+from ultralytics import YOLO
+
+# Load trained model
+model = YOLO('yolov8n-oiv7.pt')
+
+# Export to ONNX
+model.export(
+    format='onnx',
+    imgsz=640,           # Input size
+    opset=13,            # ONNX opset version
+    simplify=True,       # Simplify graph
+    dynamic=False,       # Static input shape
+)
+# Creates yolov8n-oiv7.onnx
+#+END_SRC
+
+** ONNX to TensorRT
+
+#+BEGIN_SRC python
+# Ultralytics handles this internally
+model.export(
+    format='engine',
+    imgsz=640,
+    half=True,  # FP16 precision
+)
+# Uses ONNX as intermediate step
+#+END_SRC
+
+Or manually with TensorRT:
+#+BEGIN_SRC python
+import tensorrt as trt
+
+# Build TensorRT engine from ONNX
+with trt.Builder(TRT_LOGGER) as builder:
+    network = builder.create_network(EXPLICIT_BATCH)
+    parser = trt.OnnxParser(network, TRT_LOGGER)
+
+    # Parse ONNX file
+    with open('yolov8n-oiv7.onnx', 'rb') as f:
+        parser.parse(f.read())
+
+    # Build optimized engine
+    engine = builder.build_engine(network, config)
+#+END_SRC
+
+* ONNX Format Structure
+
+** Graph Representation
+
+ONNX models are directed acyclic graphs (DAGs):
+
+#+BEGIN_EXAMPLE
+Input Tensor
+    |
+    v
+Conv2D(kernel=3x3, stride=1, padding=1)
+    |
+    v
+BatchNorm
+    |
+    v
+ReLU
+    |
+    v
+MaxPool(kernel=2x2)
+    |
+    v
+Conv2D(kernel=3x3, ...)
+    ...
+    |
+    v
+Output Tensor
+#+END_EXAMPLE
+
+** ONNX Components
+
+1. *Nodes*: Operations (Conv, ReLU, Softmax, etc.)
+2. *Edges*: Tensors flowing between operations
+3. *Initializers*: Weights and constants
+4. *Metadata*: Model info, producer, version
+
+** Protobuf Encoding
+
+ONNX uses Protocol Buffers (protobuf) for serialization:
+- Compact binary format
+- Language-agnostic
+- Schema-defined (onnx.proto)
+- Versioned (opset versions)
+
+* ONNX Opset Versions
+
+** What is an Opset?
+
+Collection of operation definitions with specific semantics.
+
+*Example:* Opset 13 introduced:
+- SequenceAt, SequenceConstruct, SequenceEmpty
+- Improved Squeeze/Unsqueeze
+
+Opset 11 vs 13:
+- Different default behavior for certain ops
+- New operations added
+- Deprecated operations removed
+
+** Choosing Opset Version
+
+#+BEGIN_SRC python
+# Ultralytics default: opset 12-13
+model.export(format='onnx', opset=13)
+#+END_SRC
+
+*Considerations:*
+- *Higher opset*: More operations, better optimization
+- *Lower opset*: Broader compatibility with older runtimes
+- *TensorRT*: Supports opset 7-17 (as of TensorRT 8.6)
+
+* ONNX Optimization
+
+** Graph Simplification
+
+#+BEGIN_SRC python
+model.export(format='onnx', simplify=True)
+#+END_SRC
+
+Simplification removes:
+- Identity nodes (no-ops)
+- Constant folding (evaluate constants at export time)
+- Redundant transposes
+- Unused subgraphs
+
+*Example:*
+#+BEGIN_EXAMPLE
+Before:
+Conv -> Transpose -> Transpose -> ReLU
+
+After:
+Conv -> ReLU
+#+END_EXAMPLE
+
+** ONNX Optimizer
+
+Manual optimization with onnx-optimizer:
+#+BEGIN_SRC python
+import onnx
+from onnxoptimizer import optimize
+
+model = onnx.load('yolov8n-oiv7.onnx')
+optimized = optimize(model, [
+    'fuse_bn_into_conv',
+    'eliminate_nop_transpose',
+    'fuse_consecutive_transposes',
+    'fuse_add_bias_into_conv',
+])
+onnx.save(optimized, 'yolov8n-oiv7_optimized.onnx')
+#+END_SRC
+
+* Dynamic vs. Static Shapes
+
+** Static Shapes (Default)
+
+#+BEGIN_SRC python
+model.export(format='onnx', dynamic=False, imgsz=640)
+#+END_SRC
+
+Input shape: Fixed [1, 3, 640, 640]
+- Faster inference (no shape inference overhead)
+- Better optimization (TensorRT can specialize kernels)
+- Less flexible (cannot change batch size or resolution)
+
+** Dynamic Shapes
+
+#+BEGIN_SRC python
+model.export(format='onnx', dynamic=True)
+#+END_SRC
+
+Input shape: Variable [batch, 3, height, width]
+- Flexible batch size and resolution
+- Slower inference (shape computation at runtime)
+- Harder to optimize
+
+*For TensorRT:* Dynamic shapes require explicit optimization profiles
+
+* ONNX Runtime
+
+## Inference with ONNX Runtime
+
+#+BEGIN_SRC python
+import onnxruntime as ort
+import numpy as np
+
+# Load model
+session = ort.InferenceSession('yolov8n-oiv7.onnx')
+
+# Get input/output names
+input_name = session.get_inputs()[0].name
+output_name = session.get_outputs()[0].name
+
+# Run inference
+image = np.random.randn(1, 3, 640, 640).astype(np.float32)
+outputs = session.run([output_name], {input_name: image})
+#+END_SRC
+
+** ONNX Runtime vs. PyTorch
+
+| Metric | PyTorch | ONNX Runtime |
+|--------|---------|--------------|
+| Inference Speed | Baseline | 1.5-2x faster |
+| Memory Usage | Higher | Lower |
+| Deployment | Requires PyTorch | Standalone runtime |
+| Model Size | Larger | Smaller |
+
+** Execution Providers
+
+ONNX Runtime supports multiple backends:
+- *CPUExecutionProvider*: Default CPU backend
+- *CUDAExecutionProvider*: NVIDIA GPU (CUDA)
+- *TensorrtExecutionProvider*: TensorRT optimization
+- *OpenVINOExecutionProvider*: Intel hardware
+- *CoreMLExecutionProvider*: Apple devices
+
+#+BEGIN_SRC python
+session = ort.InferenceSession(
+    'model.onnx',
+    providers=['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
+)
+#+END_SRC
+
+* Model Validation
+
+** ONNX Checker
+
+Verify ONNX model is valid:
+
+#+BEGIN_SRC python
+import onnx
+
+model = onnx.load('yolov8n-oiv7.onnx')
+onnx.checker.check_model(model)  # Raises exception if invalid
+
+print(f"Model IR version: {model.ir_version}")
+print(f"Opset version: {model.opset_import[0].version}")
+#+END_SRC
+
+** Output Comparison
+
+Verify PyTorch and ONNX give same outputs:
+
+#+BEGIN_SRC python
+import torch
+import onnxruntime as ort
+
+# PyTorch model
+pt_model = torch.load('yolov8n-oiv7.pt')
+pt_model.eval()
+
+# ONNX model
+ort_session = ort.InferenceSession('yolov8n-oiv7.onnx')
+
+# Same input
+input_tensor = torch.randn(1, 3, 640, 640)
+
+# PyTorch output
+with torch.no_grad():
+    pt_output = pt_model(input_tensor)
+
+# ONNX output
+ort_input = {ort_session.get_inputs()[0].name: input_tensor.numpy()}
+ort_output = ort_session.run(None, ort_input)[0]
+
+# Compare
+diff = np.abs(pt_output.numpy() - ort_output).max()
+print(f"Max difference: {diff}")  # Should be < 1e-5
+#+END_SRC
+
+* Depth Model ONNX Export
+
+** Depth Anything V2 Export
+
+From convert_depth_to_onnx.py:
+
+#+BEGIN_SRC python
+from transformers import AutoModelForDepthEstimation
+import torch
+
+model = AutoModelForDepthEstimation.from_pretrained(
+    "depth-anything/Depth-Anything-V2-Small-hf"
+)
+
+dummy_input = torch.randn(1, 3, 256, 256)
+
+torch.onnx.export(
+    model,
+    dummy_input,
+    "depth_anything_v2_small.onnx",
+    input_names=['pixel_values'],
+    output_names=['predicted_depth'],
+    opset_version=13,
+    dynamic_axes={
+        'pixel_values': {0: 'batch', 2: 'height', 3: 'width'},
+        'predicted_depth': {0: 'batch', 2: 'height', 3: 'width'}
+    }
+)
+#+END_SRC
+
+** FP16 Optimization
+
+Convert ONNX model to FP16:
+
+#+BEGIN_SRC python
+from onnxconverter_common import float16
+import onnx
+
+model = onnx.load('depth_anything_v2_small.onnx')
+model_fp16 = float16.convert_float_to_float16(model)
+onnx.save(model_fp16, 'depth_anything_v2_small_fp16.onnx')
+#+END_SRC
+
+* Visualization and Debugging
+
+** Netron
+
+View ONNX model graph:
+1. Install: https://netron.app
+2. Open ONNX file
+3. Explore layers, dimensions, operations
+
+** ONNX Model Zoo
+
+Pre-converted models: https://github.com/onnx/models
+- Image Classification (ResNet, VGG, MobileNet)
+- Object Detection (YOLO, SSD, Faster R-CNN)
+- Segmentation (U-Net, DeepLab)
+- Face Detection (MTCNN, RetinaFace)
+
+* Limitations and Considerations
+
+1. *Custom Operations*: Not all PyTorch ops have ONNX equivalents
+2. *Dynamic Control Flow*: Loops/conditionals may not export cleanly
+3. *Operator Coverage*: Some ops only in newer opsets
+4. *Precision Loss*: FP32 -> FP16 conversion may reduce accuracy
+5. *Version Compatibility*: ONNX version must match runtime version
+
+* Project Files
+
+- convert_to_tensorrt.py - ONNX to TensorRT conversion
+- convert_depth_to_onnx.py - Depth model ONNX export
+- convert_simple.py - Simple ONNX export utility
+- yolov8n-oiv7.onnx - YOLO ONNX model
+- depth_anything_v2_small_fp16.onnx - Depth ONNX model
+
+* References
+- [[file:../optimization/20251022110000-tensorrt_optimization.org][TensorRT Optimization]]
+- [[file:../depth/20251019110200-depth_anything_v2.org][Depth Anything V2]]
+- [[file:../depth/20251019110300-fp16_mixed_precision.org][FP16 Mixed Precision]]
+
+* Footnotes
+
+[fn:1] Protocol Buffers: Language-neutral, platform-neutral extensible mechanism for serializing structured data. Developed by Google.
+
+[fn:2] Opset: ONNX operator set. Collection of operator schemas. Higher opsets have more operators and improved semantics.
+
+[fn:3] IR Version: Intermediate Representation version. Defines the overall structure and semantics of the ONNX graph format.

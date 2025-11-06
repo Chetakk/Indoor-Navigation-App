@@ -1,0 +1,119 @@
+:PROPERTIES:
+:ID:       20251019110200-depth_anything_v2
+:ROAM_ALIASES: "Depth Anything V2" "DAv2"
+:END:
+#+title: Depth Anything V2 Architecture
+#+filetags: :deep_learning:model:architecture:depth_estimation:
+
+* Overview
+
+Depth Anything V2 is a state-of-the-art monocular depth estimation model (NeurIPS 2024) that achieves superior performance while being 10x faster than previous models like MiDaS.
+
+Developed by LiheYoung et al., it builds on the original Depth Anything with improved architecture and training strategy.
+
+* Architecture
+
+** Backbone: DINOv2 (Vision Transformer)
+- Uses DINOv2 as encoder (self-supervised pre-trained ViT)
+- Captures rich semantic features without labeled data
+- More robust than CNN backbones to domain shifts
+
+** Decoder: DPT (Dense Prediction Transformer)
+- Transformer-based decoder for dense prediction
+- Reassembles multi-scale features from encoder
+- Produces full-resolution depth maps
+
+** Model Variants
+
+| Variant | Parameters | Speed (FPS) | Use Case                |
+|---------+------------+-------------+-------------------------|
+| Small   | ~25M       | 72          | Our choice (real-time)  |
+| Base    | ~97M       | 45          | Balanced                |
+| Large   | ~335M      | 18          | Highest accuracy        |
+
+* Key Improvements over V1
+
+1. *Better Training Data*: Trained on more diverse datasets
+2. *Fine-grained Details*: Improved depth map sharpness
+3. *Metric Depth Capability*: Can output metric depth (not just relative)
+4. *Robustness*: Better zero-shot generalization to new scenes
+
+* Why We Chose Depth Anything V2 Small
+
+** Performance
+- 72 FPS on GPU (14ms per frame)
+- 10x faster than MiDaS (~150-300ms)
+- Meets our <15ms target for real-time navigation
+
+** Size
+- Only 25M parameters (~100MB model file)
+- Fits in GPU memory alongside YOLO
+- Fast model loading (<4 seconds)
+
+** Accuracy
+- State-of-the-art zero-shot performance
+- Works on indoor/outdoor scenes
+- Robust to lighting variations
+
+* Technical Details
+
+** Input
+- RGB image of any resolution
+- We resize to 256x256 for speed (configurable)
+- No camera calibration required
+
+** Output
+- Relative depth map (same size as input)
+- Values in arbitrary units (not meters)
+- Needs calibration for metric depth [fn:1]
+
+** Inference Pipeline
+1. Preprocess: Resize + normalize image
+2. Encode: DINOv2 extracts features at multiple scales
+3. Decode: DPT reassembles features into depth map
+4. Post-process: Upsample to original resolution
+
+* Optimization Applied
+
+We apply several optimizations on top of base model:
+
+1. *FP16 Mixed Precision*: 3.82x speedup [[id:20251019110300-fp16_mixed_precision][FP16]]
+2. *Reduced Input Size*: 256x256 instead of 518x518
+3. *GPU Acceleration*: CUDA on RTX 5060
+4. *Async Processing*: Non-blocking inference [[id:20251019110500-async_processing][Async Processing]]
+
+Total speedup: ~38x over original MiDaS implementation!
+
+* Limitations
+
+1. *Relative Depth Only*: Needs calibration for metric distances
+2. *Scale Ambiguity*: Same scene at different scales looks identical
+3. *Monocular Limitations*: Can't resolve depth for featureless regions
+4. *Domain Shift*: May struggle on unseen object types
+
+* How We Address Limitations
+
+- Auto-calibration [[id:20251019110600-auto_calibration][Auto Calibration]]: Learn scale from pinhole estimates
+- Pinhole fallback [[id:20251019110100-pinhole_camera_model][Pinhole Model]]: Classical method for known objects
+
+* Related Notes
+
+- [[id:20251019110000-monocular_depth_estimation][Monocular Depth Estimation]] - Core concept
+- [[id:20251019110100-pinhole_camera_model][Pinhole Camera Model]] - Calibration method
+- [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]] - Speed optimization
+- [[id:20251019110500-async_processing][Async Processing]] - Non-blocking architecture
+
+* Implementation
+
+Model loading in [[file:../app/services/depth_estimator.py][depth_estimator.py:229-271]]
+
+HuggingFace model: =depth-anything/Depth-Anything-V2-Small-hf=
+
+* Footnotes
+[fn:1] We use auto-calibration to convert relative depth to metric (meters)
+
+* References
+
+- Paper: https://arxiv.org/abs/2406.09414
+- GitHub: https://github.com/DepthAnything/Depth-Anything-V2
+- HuggingFace: https://huggingface.co/depth-anything/Depth-Anything-V2-Small-hf

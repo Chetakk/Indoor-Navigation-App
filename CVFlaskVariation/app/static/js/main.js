@@ -9,8 +9,9 @@ import { initializeOrientation, calibrateGyroscope, requestOrientationPermission
 import { estimateDistance } from './modules/detection.js';
 import { togglePathfinding, setNavigationGoal, getPathfindingState } from './modules/pathfinding.js';
 import { toggleHeader, toggleDetectionBoxes, addOrientationStatusIndicator } from './modules/ui.js';
-import { startCamera, stopDetection, startRealtimeAnalysis, getCameraState } from './modules/camera.js';
+import { startCamera, stopDetection, startRealtimeAnalysis, getCameraState, toggleDashboardStreaming } from './modules/camera.js';
 import TimingConfig from './modules/timingConfig.js';
+import VoiceReceiver from './modules/voiceReceiver.js';
 
 // Make functions globally available for onclick handlers
 window.startCamera = startCamera;
@@ -22,6 +23,7 @@ window.requestOrientationPermission = requestOrientationPermission;
 window.togglePathfinding = togglePathfinding;
 window.toggleHeader = toggleHeader;
 window.toggleDetectionBoxes = toggleDetectionBoxes;
+window.toggleDashboardStreaming = toggleDashboardStreaming;
 
 // Make pathfinding state accessible
 Object.defineProperty(window, 'pathfindingEnabled', {
@@ -156,56 +158,80 @@ window.announceCurrentObjects = announceCurrentObjects;
  * @param {string} command - The voice command text
  */
 function handleFindCommand(command) {
-    console.log('Processing find command:', command);
+    console.log('========================================');
+    console.log('PROCESSING FIND COMMAND:', command);
+    console.log('========================================');
 
     // Extract the object name from command
     // Patterns: "find bench", "find the chair", "find a door", "find table"
     const findMatch = command.match(/find\s+(the\s+|a\s+)?(\w+)/i);
 
     if (!findMatch) {
+        console.log('ERROR: Could not parse object name from command');
         speak("I couldn't understand what object to find. Try saying 'find door' or 'find chair'.", 'high');
         return;
     }
 
     const targetObject = findMatch[2].toLowerCase();
-    console.log('Looking for object:', targetObject);
+    console.log('TARGET OBJECT:', targetObject);
 
     // Check if detection is active
     const cameraState = getCameraState();
+    console.log('Detection active:', cameraState.detectionActive);
+
     if (!cameraState.detectionActive) {
+        console.log('ERROR: Detection not active');
         speak("Please start detection first by saying 'start'.", 'high');
         return;
     }
 
     // Check if we have recent detections
+    console.log('Checking window.lastDetections...');
+    console.log('window.lastDetections exists:', !!window.lastDetections);
+    console.log('window.lastDetections length:', window.lastDetections ? window.lastDetections.length : 0);
+
     if (!window.lastDetections || window.lastDetections.length === 0) {
+        console.log('ERROR: No detections available');
         speak(`No objects detected. Cannot find ${targetObject}.`, 'high');
         return;
     }
 
+    console.log('Available detections:', window.lastDetections.map(d => d.class_name).join(', '));
+
     // Search for the target object in current detections
     let foundObject = null;
     let closestMatch = null;
-    let minDistance = Infinity;
+    let maxArea = 0;  // Find largest bbox (closest object)
 
-    window.lastDetections.forEach(detection => {
+    console.log('Searching for matches...');
+    window.lastDetections.forEach((detection, index) => {
         const detectionName = detection.class_name.toLowerCase();
+        console.log(`Detection ${index}: ${detectionName}`);
 
         // Exact match or partial match
         if (detectionName === targetObject || detectionName.includes(targetObject) || targetObject.includes(detectionName)) {
+            console.log(`MATCH FOUND: ${detectionName} matches ${targetObject}`);
             const distanceInfo = estimateDistance(detection.bbox, detection.class_name, 640, 480);
             const bboxArea = (detection.bbox[2] - detection.bbox[0]) * (detection.bbox[3] - detection.bbox[1]);
 
+            console.log(`Bbox area: ${bboxArea}, Current max: ${maxArea}`);
+
             // Use bbox area as proxy for distance (larger = closer)
-            if (bboxArea < minDistance) {
-                minDistance = bboxArea;
+            if (bboxArea > maxArea) {
+                maxArea = bboxArea;
                 foundObject = detection;
                 closestMatch = distanceInfo;
+                console.log(`Updated closest match to ${detectionName}`);
             }
         }
     });
 
     if (foundObject) {
+        console.log('========================================');
+        console.log('OBJECT FOUND:', foundObject.class_name);
+        console.log('Distance:', closestMatch.distance);
+        console.log('Direction:', closestMatch.direction);
+        console.log('========================================');
         // Enable pathfinding if not already enabled
         if (!window.pathfindingEnabled) {
             togglePathfinding();
@@ -222,8 +248,8 @@ function handleFindCommand(command) {
         if (detectionCanvas && videoElement) {
             // Convert from video coordinates to client coordinates
             const rect = detectionCanvas.getBoundingClientRect();
-            const scaleX = detectionCanvas.width / (videoElement.videoWidth || 640);
-            const scaleY = detectionCanvas.height / (videoElement.videoHeight || 480);
+            const scaleX = rect.width / (videoElement.videoWidth || 640);
+            const scaleY = rect.height / (videoElement.videoHeight || 480);
 
             // Transform: video coords -> canvas coords -> client coords
             const canvasX = centerX * scaleX;
@@ -242,6 +268,10 @@ function handleFindCommand(command) {
             // Announce success
             const announcement = `Found ${foundObject.class_name} ${closestMatch.distance} to your ${closestMatch.direction}. Setting navigation path.`;
             speak(announcement, 'high');
+        } else {
+            // Canvas or video element not found - error feedback
+            speak("Cannot set navigation goal. Camera interface not ready. Please ensure detection is active.", 'high');
+            console.error('Navigation error: detectionCanvas or videoElement not found');
         }
     } else {
         // Object not found in current detections
@@ -294,11 +324,13 @@ function getSimilarObjects(target) {
  */
 let voiceRecognition = null;
 let voiceCommandsEnabled = false;
+let voiceRecognitionActive = false; // Track actual running state
 
 function initializeVoiceCommands() {
     // Check if speech recognition is available
     if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
         console.warn('Accessibility: Speech recognition not available');
+        updateVoiceStatusIndicator('unavailable');
         return false;
     }
 
@@ -310,9 +342,21 @@ function initializeVoiceCommands() {
     voiceRecognition.interimResults = false;
     voiceRecognition.lang = 'en-US';
 
+    voiceRecognition.onstart = function() {
+        voiceRecognitionActive = true;
+        updateVoiceStatusIndicator('active');
+        console.log('Voice recognition STARTED and LISTENING');
+    };
+
     voiceRecognition.onresult = function(event) {
         const command = event.results[event.results.length - 1][0].transcript.toLowerCase().trim();
-        console.log('Voice command received:', command);
+        console.log('========================================');
+        console.log('VOICE COMMAND RECEIVED:', command);
+        console.log('========================================');
+
+        // Flash the indicator when command is detected
+        updateVoiceStatusIndicator('processing');
+        setTimeout(() => updateVoiceStatusIndicator('active'), 500);
 
         const cameraState = getCameraState();
 
@@ -337,6 +381,7 @@ function initializeVoiceCommands() {
         }
         else if (command.includes('find')) {
             console.log('Voice: Find command detected');
+            console.log('Calling handleFindCommand with:', command);
             handleFindCommand(command);
         }
         else if (command.includes('help')) {
@@ -352,30 +397,62 @@ function initializeVoiceCommands() {
             if (audioState.enabled) toggleAudio();
             speak("Audio disabled", 'high');
         }
+        else if (command.includes('stop streaming') || command.includes('disable streaming') || command.includes('privacy mode')) {
+            console.log('Voice: Disabling camera streaming to dashboard');
+            toggleDashboardStreaming(false);
+            speak("Camera streaming to dashboard disabled. Your privacy is protected.", 'high');
+        }
+        else if (command.includes('start streaming') || command.includes('enable streaming') || command.includes('allow streaming')) {
+            console.log('Voice: Enabling camera streaming to dashboard');
+            toggleDashboardStreaming(true);
+            speak("Camera streaming to dashboard enabled.", 'high');
+        }
+        else {
+            console.log('Voice: Unrecognized command -', command);
+        }
     };
 
     voiceRecognition.onerror = function(event) {
-        console.error('Voice recognition error:', event.error);
+        console.error('Voice recognition ERROR:', event.error);
+        voiceRecognitionActive = false;
+        updateVoiceStatusIndicator('error');
 
         // Auto-restart on certain errors
         if (event.error === 'no-speech' || event.error === 'audio-capture') {
             console.log('Voice recognition: Restarting after error');
             setTimeout(() => {
                 if (voiceCommandsEnabled && voiceRecognition) {
-                    voiceRecognition.start();
+                    try {
+                        voiceRecognition.start();
+                        console.log('Voice recognition: Restart attempt successful');
+                    } catch (err) {
+                        console.error('Voice recognition: Restart failed:', err);
+                        updateVoiceStatusIndicator('inactive');
+                    }
                 }
             }, TimingConfig.voice.errorRestartDelay);
+        } else {
+            updateVoiceStatusIndicator('inactive');
         }
     };
 
     voiceRecognition.onend = function() {
-        console.log('Voice recognition ended');
+        console.log('Voice recognition ENDED');
+        voiceRecognitionActive = false;
+        updateVoiceStatusIndicator('inactive');
+
         // Auto-restart if still enabled
         if (voiceCommandsEnabled) {
-            console.log('Voice recognition: Auto-restarting');
+            console.log('Voice recognition: Auto-restarting...');
             setTimeout(() => {
                 if (voiceCommandsEnabled && voiceRecognition) {
-                    voiceRecognition.start();
+                    try {
+                        voiceRecognition.start();
+                        console.log('Voice recognition: Auto-restart successful');
+                    } catch (err) {
+                        console.error('Voice recognition: Auto-restart failed:', err);
+                        updateVoiceStatusIndicator('inactive');
+                    }
                 }
             }, TimingConfig.voice.autoRestartDelay);
         }
@@ -383,6 +460,63 @@ function initializeVoiceCommands() {
 
     voiceCommandsEnabled = true;
     return true;
+}
+
+/**
+ * Update voice status indicator
+ * @param {string} status - Status: 'unavailable', 'inactive', 'active', 'processing', 'error'
+ */
+function updateVoiceStatusIndicator(status) {
+    let indicator = document.getElementById('voiceStatusIndicator');
+
+    // Create indicator if it doesn't exist
+    if (!indicator) {
+        indicator = document.createElement('div');
+        indicator.id = 'voiceStatusIndicator';
+        indicator.style.cssText = `
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: bold;
+            z-index: 10000;
+            transition: all 0.3s ease;
+        `;
+        document.body.appendChild(indicator);
+    }
+
+    // Update based on status
+    switch(status) {
+        case 'unavailable':
+            indicator.textContent = 'Voice: Not Available';
+            indicator.style.backgroundColor = '#666';
+            indicator.style.color = '#fff';
+            break;
+        case 'inactive':
+            indicator.textContent = 'Voice: Inactive';
+            indicator.style.backgroundColor = '#ff6b6b';
+            indicator.style.color = '#fff';
+            break;
+        case 'active':
+            indicator.textContent = 'Voice: Listening';
+            indicator.style.backgroundColor = '#51cf66';
+            indicator.style.color = '#fff';
+            break;
+        case 'processing':
+            indicator.textContent = 'Voice: Processing...';
+            indicator.style.backgroundColor = '#ffd43b';
+            indicator.style.color = '#000';
+            break;
+        case 'error':
+            indicator.textContent = 'Voice: Error';
+            indicator.style.backgroundColor = '#ff6b6b';
+            indicator.style.color = '#fff';
+            break;
+    }
+
+    console.log('Voice status indicator updated:', status);
 }
 
 // Initialize app on DOM ready
@@ -574,5 +708,47 @@ document.addEventListener('keydown', function(event) {
         startCamera();
     }
 });
+
+// Initialize voice receiver for receiving voice messages from dashboard
+let voiceReceiver = null;
+
+// Register session with server for voice communication
+async function registerClientSession() {
+    try {
+        const response = await fetch('/client/register_session', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                camera_name: 'User Camera'
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            console.log('Client session registered:', data.camera_id);
+
+            // Initialize voice receiver
+            voiceReceiver = new VoiceReceiver();
+
+            // Start listening for voice messages
+            // We start this immediately so operator can send voice anytime
+            voiceReceiver.start();
+
+            console.log('Voice receiver active - ready for voice messages from dashboard');
+        } else {
+            console.error('Failed to register client session:', data.error);
+        }
+    } catch (error) {
+        console.error('Error registering client session:', error);
+    }
+}
+
+// Register session on page load (with slight delay to let other things initialize)
+setTimeout(() => {
+    registerClientSession();
+}, 2000);
 
 console.log('✅ Main application module loaded');

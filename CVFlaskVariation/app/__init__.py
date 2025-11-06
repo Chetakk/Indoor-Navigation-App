@@ -55,13 +55,16 @@ def create_app(config_name=None):
         logger.info(f"🎯 Device: {model_info.get('device', 'unknown')}")
 
     # Register blueprints
-    from .routes import health, model, tracking, navigation, detection
+    from .routes import health, model, tracking, navigation, detection, cameras, client, dashboard
 
     app.register_blueprint(health.bp)
     app.register_blueprint(model.bp)
     app.register_blueprint(tracking.bp)
     app.register_blueprint(navigation.bp)
     app.register_blueprint(detection.bp)
+    app.register_blueprint(dashboard.bp)
+    app.register_blueprint(cameras.bp)
+    app.register_blueprint(client.bp)
 
     # Register error handlers
     @app.errorhandler(404)
@@ -124,6 +127,11 @@ def log_startup_info(app):
     logger.info("  🎯 /reset_tracking - Reset object tracking (POST)")
     logger.info("  📈 /tracking_stats - Tracking statistics")
     logger.info("  🗺️  /calculate_path - Calculate navigation path (POST)")
+    logger.info("  🖥️  /admin/dashboard - Server monitoring dashboard")
+    logger.info("  📊 /admin/metrics - System metrics and performance")
+    logger.info("  💚 /admin/health - Detailed health status")
+    logger.info("  🔌 /admin/ping - Health ping")
+    logger.info("  ⚠️  /admin/system/shutdown - Graceful server shutdown")
 
     logger.info("\n" + "=" * 70)
     logger.info("🦯 Optimized for REAL-TIME blind indoor navigation")

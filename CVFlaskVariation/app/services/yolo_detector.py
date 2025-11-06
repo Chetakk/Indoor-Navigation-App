@@ -1,9 +1,11 @@
 """
 YOLO model management and object detection service.
+Supports PyTorch (.pt), ONNX (.onnx), and TensorRT (.engine) models.
 """
 
 import logging
 import torch
+from pathlib import Path
 from ultralytics import YOLO
 from ..constants import (
     DEFAULT_CONFIDENCE_THRESHOLD,
@@ -33,35 +35,43 @@ class YOLODetector:
     def _load_model(self):
         """Load the YOLO model and configure device."""
         try:
-            logger.info(f"Loading YOLO model from {self.model_path}...")
+            model_ext = Path(self.model_path).suffix.lower()
+            logger.info(f"Loading YOLO model from {self.model_path} (format: {model_ext})...")
 
             # Check GPU availability
             if torch.cuda.is_available():
-                logger.info(f"🎮 GPU Detected: {torch.cuda.get_device_name(0)}")
-                logger.info(f"🎮 GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+                logger.info(f"GPU Detected: {torch.cuda.get_device_name(0)}")
+                logger.info(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
             else:
-                logger.warning("⚠️ No GPU detected - using CPU (slower performance)")
+                logger.warning("No GPU detected - using CPU (slower performance)")
 
-            # Load model
+            # Load model (Ultralytics automatically detects format)
             self.model = YOLO(self.model_path)
 
-            # Force CPU usage (temporary workaround for GPU hanging issue)
-            if self.device == 'cpu':
+            # Configure device (only for .pt models, not for engines)
+            if model_ext == '.engine':
+                # TensorRT engines are pre-compiled for specific device
+                logger.info(f"Model loaded successfully (TensorRT engine)")
+            elif self.device == 'cpu':
                 self.model.to('cpu')
-                logger.info("✅ Model loaded successfully on CPU (GPU disabled due to hang issue)")
+                logger.info("Model loaded successfully on CPU")
             else:
                 self.model.to(self.device)
-                logger.info(f"✅ Model loaded successfully on {self.device}")
+                logger.info(f"Model loaded successfully on {self.device}")
 
-            logger.info(f"📦 Model has {len(self.model.names)} classes")
+            # Log model type
+            if model_ext == '.engine':
+                logger.info("Using TensorRT engine for optimized GPU inference")
+            elif model_ext == '.onnx':
+                logger.info("Using ONNX model format")
+            elif model_ext == '.pt':
+                logger.info("Using PyTorch model format")
+
+            logger.info(f"Model has {len(self.model.names)} classes")
 
         except Exception as e:
-            logger.error(f"❌ Error loading model: {e}")
-            # Fallback to default model
-            logger.info("Attempting to load fallback model...")
-            self.model = YOLO('yolov8x-oiv7.pt')
-            self.model.to('cpu')
-            logger.info("Using fallback model on CPU")
+            logger.error(f"Error loading model: {e}")
+            raise e
 
     def detect(self, image, conf=None, iou=None, max_det=None, verbose=False):
         """
@@ -97,7 +107,8 @@ class YOLODetector:
 
         return results
 
-    def get_class_names(self):
+    @property
+    def class_names(self):
         """
         Get all available class names.
 
@@ -107,6 +118,15 @@ class YOLODetector:
         if self.model is None:
             return {}
         return self.model.names
+
+    def get_class_names(self):
+        """
+        Get all available class names (method version for backwards compatibility).
+
+        Returns:
+            dict: Dictionary mapping class IDs to class names
+        """
+        return self.class_names
 
     def get_model_info(self):
         """

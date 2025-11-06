@@ -1,0 +1,63 @@
+:PROPERTIES:
+:ID:       20251019110000-monocular_depth_estimation
+:ROAM_ALIASES: "Monocular Depth" "Single Image Depth"
+:END:
+#+title: Monocular Depth Estimation
+#+filetags: :computer_vision:depth_estimation:core_concept:
+
+* Concept
+
+Monocular depth estimation is the task of predicting the distance (depth) of objects in a scene from a *single 2D image*, without requiring stereo cameras or LiDAR sensors.
+
+This is fundamentally an ill-posed problem because infinite 3D scenes can project to the same 2D image. Deep learning models solve this by learning depth cues from training data.
+
+* Key Insights
+
+- Humans use monocular cues (perspective, occlusion, texture gradients, shadows) to perceive depth
+- Deep learning models learn similar cues from millions of images
+- Modern approaches (2024-2025) use Vision Transformers instead of CNNs
+- Two types: relative depth (ordering) and metric depth (actual distances)
+
+* Technical Details
+
+** Input
+- Single RGB image (H x W x 3 channels)
+- No camera calibration required for relative depth
+- Camera intrinsics needed for metric depth
+
+** Output
+- Depth map (H x W) with depth value per pixel
+- Either relative (0-1 normalized) or metric (meters)
+
+** Common Depth Cues Learned
+1. Perspective: parallel lines converge with distance
+2. Occlusion: closer objects occlude farther ones
+3. Texture gradient: texture becomes finer with distance
+4. Atmospheric perspective: distant objects appear hazier
+5. Size familiarity: known object sizes help estimate distance
+
+* Why Important for Our Project
+
+Blind navigation requires *metric distances* in real-world units (meters) to provide actionable guidance:
+- "Person 2 meters ahead"
+- "Wall 0.5 meters to your right"
+- "Obstacle approaching, stop"
+
+Stereo cameras or LiDAR are too expensive/bulky for smartphone deployment.
+
+* Related Notes
+
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - State-of-the-art model we use
+- [[id:20251019110100-pinhole_camera_model][Pinhole Camera Model]] - Classical approach for calibration
+- [[id:20251019110500-async_processing][Async Processing]] - Non-blocking architecture
+- [[id:20251019110600-auto_calibration][Auto Calibration]] - Scale learning system
+
+* Implementation
+
+See [[file:../app/services/depth_estimator.py][app/services/depth_estimator.py]]
+
+* References
+
+- Depth Anything V2 paper: https://arxiv.org/abs/2406.09414
+- MiDaS: https://arxiv.org/abs/1907.01341
+- Survey on Monocular Depth: https://arxiv.org/abs/2501.11841

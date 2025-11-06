@@ -3,13 +3,17 @@ Flask application configuration.
 """
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 
 class Config:
     """Base configuration."""
 
     # Flask settings
-    SECRET_KEY = os.environ.get('SECRET_KEY') or 'your-secret-key-here-change-in-production'
+    SECRET_KEY = os.environ.get('SECRET_KEY') or 'VerySecretKey'
 
     # CORS settings
     CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
@@ -17,11 +21,13 @@ class Config:
     CORS_ALLOW_HEADERS = ['Content-Type']
 
     # Model settings
-    MODEL_PATH = os.environ.get('MODEL_PATH', 'yolov8n-oiv7.pt')
-    FORCE_CPU = os.environ.get('FORCE_CPU', 'false').lower() == 'true'  # Use GPU by default if available
+    # NOTE: .env file overrides these defaults. Set MODEL_PATH=yolov8n-oiv7.engine for TensorRT
+    MODEL_PATH = os.environ.get('MODEL_PATH', 'yolov8x-oiv7.engine')  # Default to TensorRT for best performance
+    FORCE_CPU = os.environ.get('FORCE_CPU', 'false').lower() == 'true'  # Use GPU by default if available (RTX 5060)
 
     # Server settings
-    HOST = os.environ.get('FLASK_HOST', '10.190.36.242')
+    HOST = os.environ.get('FLASK_HOST', '10.20.95.214')
+    # HOST = os.environ.get('FLASK_HOST', '10.242.173.242')
     PORT = int(os.environ.get('FLASK_PORT', 5000))
     DEBUG = os.environ.get('FLASK_DEBUG', 'false').lower() == 'true'
 
@@ -50,7 +56,7 @@ class Config:
 class DevelopmentConfig(Config):
     """Development configuration."""
     DEBUG = True
-    FORCE_CPU = False  # Use CPU in development to avoid GPU issues
+    # Inherit FORCE_CPU from parent Config (respects .env file)
 
 
 class ProductionConfig(Config):

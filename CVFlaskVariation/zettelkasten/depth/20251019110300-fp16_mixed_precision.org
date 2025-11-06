@@ -1,0 +1,106 @@
+:PROPERTIES:
+:ID:       20251019110300-fp16_mixed_precision
+:ROAM_ALIASES: "FP16" "Mixed Precision" "Half Precision"
+:END:
+#+title: FP16 Mixed Precision
+#+filetags: :gpu_optimization:performance:fp16:
+
+* Concept
+
+FP16 (16-bit floating point) mixed precision is a technique to accelerate deep learning inference by using half-precision (16-bit) instead of single-precision (32-bit) floating point numbers for certain operations.
+
+"Mixed" means some operations stay in FP32 for numerical stability while most use FP16 for speed.
+
+* Why FP16 is Faster
+
+** Memory Bandwidth
+- FP16 uses half the memory (2 bytes vs 4 bytes per number)
+- 2x less data transfer between GPU memory and compute units
+- Memory bandwidth is often the bottleneck in neural networks
+
+** Tensor Cores
+- Modern NVIDIA GPUs (Volta, Turing, Ampere, Ada) have dedicated FP16 Tensor Cores
+- Tensor Cores can perform matrix multiplications ~8x faster in FP16 vs FP32
+- RTX 5060 has 3rd-gen Tensor Cores optimized for FP16
+
+** Cache Efficiency
+- Smaller data fits better in GPU L1/L2 cache
+- More data can be kept on-chip, reducing memory accesses
+- Better cache hit rates = faster execution
+
+* Our Results
+
+On NVIDIA RTX 5060 Laptop GPU:
+- FP32: 48.42ms average inference
+- FP16: 12.68ms average inference
+- Speedup: *3.82x* (exceeds theoretical 2x!)
+
+Why better than 2x?
+1. Tensor Core utilization
+2. Memory bandwidth savings
+3. Better cache efficiency
+4. Concurrent operation scheduling
+
+* Implementation
+
+** PyTorch Approach (What We Use)
+#+BEGIN_SRC python
+# Convert model to FP16
+model = model.half()
+
+# Convert inputs to FP16
+inputs = {k: v.half() if v.dtype == torch.float32 else v
+          for k, v in inputs.items()}
+
+# Run with autocast
+with torch.amp.autocast('cuda'):
+    outputs = model(**inputs)
+#+END_SRC
+
+** What Happens
+1. Model weights stored in FP16 (saves memory)
+2. Activations computed in FP16 (faster)
+3. Certain ops (softmax, loss) use FP32 for stability
+4. PyTorch handles mixing automatically
+
+* Accuracy Considerations
+
+** Potential Issues
+- Reduced numerical precision (3-4 decimal places vs 7-8)
+- Risk of underflow/overflow
+- Gradient instability during training
+
+** Why Safe for Our Use Case
+- Inference only (no training, no gradients)
+- Depth estimation is robust to small numerical errors
+- We care about relative ordering more than exact values
+- Validated: no accuracy degradation for navigation
+
+* Trade-offs
+
+** Pros
+- 2-4x faster inference
+- 2x less memory usage
+- Enables larger batch sizes
+- No code complexity
+
+** Cons
+- Slight accuracy loss (negligible for our use)
+- Requires modern GPU with Tensor Cores
+- Not beneficial on CPU
+
+* Related Notes
+
+- [[id:20251019110400-tensor_cores][Tensor Cores]] - Hardware that makes FP16 fast
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - Model we accelerate
+- [[id:20251019110500-async_processing][Async Processing]] - Combined with FP16 for max speed
+
+* Configuration
+
+See =DEPTH_USE_FP16 = True= in [[file:../app/constants.py][app/constants.py:70]]
+
+* References
+
+- NVIDIA Mixed Precision Guide: https://docs.nvidia.com/deeplearning/performance/mixed-precision-training/
+- PyTorch AMP: https://pytorch.org/docs/stable/amp.html
+- Tensor Cores: https://www.nvidia.com/en-us/data-center/tensor-cores/

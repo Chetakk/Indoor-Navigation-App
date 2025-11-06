@@ -1,0 +1,98 @@
+#+TITLE: Async Architecture Overview
+#+AUTHOR: CV-Project Documentation
+#+DATE: 2025-10-19
+
+* Introduction
+
+The CV-Project blind navigation system uses a hybrid multi-threaded (Python) + async/await (JavaScript) architecture optimized for real-time safety-critical operations. The core principle is *non-blocking operations* to maintain responsiveness for collision detection and audio warnings.
+
+* Architecture Layers
+
+** Backend (Python/Flask)
+   - Main Flask thread: Handles HTTP requests synchronously
+   - Worker threads: Async depth estimation with GPU inference[fn:1]
+   - Thread-safe caching with locks
+   - Graceful shutdown with cleanup handlers
+
+** Frontend (JavaScript/Browser)
+   - Main event loop: UI updates and event handling
+   - Async/await patterns: HTTP detection requests with timeout
+   - Audio queue management: Priority-based announcement system[fn:2]
+   - Request ID tracking: Prevents stale response processing
+
+** Communication Flow
+   - Unidirectional: Browser -> Server (JSON POST requests)
+   - AbortController for request cancellation
+   - Response validation with request ID tracking
+
+* High-Level Flow Diagram
+
+#+BEGIN_SRC
+Browser                    Flask Server              Async Worker Thread
+  |                             |                            |
+  |--(1) POST /detect_image---->|                            |
+  |                             |                            |
+  |                             |--(2) Run YOLO detection    |
+  |                             |                            |
+  |                             |--(3) Queue image---------->|
+  |                             |    (non-blocking)          |
+  |                             |                            |--(4) Process depth
+  |                             |                            |     (GPU inference)
+  |                             |<--(5) Read cached depth----|
+  |                             |     (latest or None)       |
+  |<--(6) Return detections-----|                            |
+  |     + collision data        |                            |
+  |                             |                            |--(7) Update cache
+  |                             |                            |     (thread-safe)
+  |--(8) Process response       |                            |
+  |     Check request ID        |                            |
+  |                             |                            |
+  |--(9) Announce detections    |                            |
+#+END_SRC
+
+* Key Design Decisions
+
+** Why Threading Instead of Asyncio?
+   - GPU operations (PyTorch CUDA) are inherently blocking
+   - Threading allows true parallel GPU processing
+   - Simpler integration with synchronous Flask routes
+   - No need for async/await in route handlers
+
+** Why Daemon Threads?
+   - Automatically cleaned up when main application exits
+   - Prevents hanging processes on crash/shutdown
+   - Simplifies resource management
+
+** Why Request ID Tracking?
+   - Network latency can cause responses to arrive out-of-order
+   - Prevents processing stale depth/collision data
+   - Critical for safety: newer data is always more accurate
+
+** Why Audio State Machine?
+   - Prevents audio collisions and interruptions
+   - Priority-based queueing for critical warnings
+   - Rate limiting prevents overwhelming the user
+
+* Performance Characteristics
+
+| Component              | Latency      | Throughput | Optimization           |
+|------------------------+--------------+------------+------------------------|
+| YOLO detection (CPU)   | 100-200ms    | 5-10 FPS   | TensorRT engine        |
+| Depth estimation (GPU) | 25-40ms      | 25-40 FPS  | FP16, input resizing   |
+| Collision detection    | <5ms         | N/A        | Numpy vectorization    |
+| Audio synthesis        | 50-200ms     | 1 message  | Priority queue         |
+| Total round trip       | 100-250ms    | 4-10 FPS   | Request coalescing     |
+
+* Related Documentation
+
+- [[file:async-backend-threading.org][Async Backend Threading Patterns]]
+- [[file:async-frontend-patterns.org][Async Frontend Patterns]]
+- [[file:async-synchronization.org][Synchronization Mechanisms]]
+- [[file:async-audio-system.org][Audio Queue State Machine]]
+- [[file:../depth/depth-estimator.org][Depth Estimation System]]
+
+* Footnotes
+
+[fn:1] See [[file:async-backend-threading.org][Async Backend Threading]] for implementation details
+
+[fn:2] See [[file:async-audio-system.org][Audio Queue State Machine]] for state transitions

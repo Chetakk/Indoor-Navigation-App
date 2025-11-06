@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify, request, session
 from ..services.yolo_detector import get_detector
 from ..services.object_tracker import get_tracking_manager
 from ..services.collision_detector import calculate_movement, predict_collision
+from ..services.depth_estimator import get_depth_estimator
 from ..utils.filtering import (
     is_class_blacklisted,
     normalize_class_name,
@@ -24,7 +25,12 @@ from ..utils.image_processing import (
     apply_rotation_correction,
     resize_image_for_inference
 )
-from ..constants import MAX_IMAGE_DIMENSION
+from ..constants import (
+    MAX_IMAGE_DIMENSION,
+    ENABLE_SELECTIVE_TRACKING,
+    SELECTIVE_TRACKING_CLASSES,
+    SELECTIVE_TRACKING_MIN_SIZE
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +43,12 @@ def detect_image():
     start_time = time.time()
     try:
         logger.info("📥 Received detection request")
-        logger.info(f"Request headers: {dict(request.headers)}")
+        # Filter out Cookie header to avoid console spam
+        headers_dict = dict(request.headers)
+        if 'Cookie' in headers_dict:
+            cookie_len = len(headers_dict['Cookie'])
+            headers_dict['Cookie'] = f'<{cookie_len} bytes>'
+        logger.info(f"Request headers: {headers_dict}")
 
         data = request.get_json()
         logger.info(f"Request data keys: {data.keys() if data else 'None'}")
@@ -55,6 +66,14 @@ def detect_image():
 
         # Check if tracking is enabled (default: True)
         tracking_enabled = data.get('tracking_enabled', True)
+
+        # Get motion calibration data (for depth scale estimation without height assumptions)
+        motion_calibration = data.get('motion_calibration', {})
+        motion_scale = motion_calibration.get('scale')
+        motion_confidence = motion_calibration.get('confidence', 0.0)
+
+        if motion_scale:
+            logger.info(f"🚶 Motion calibration received: scale={motion_scale:.4f}, confidence={motion_confidence:.2f}")
 
         # Decode base64 image from browser
         image_data = data['image'].split(',')[1]  # Remove data:image/jpeg;base64,
@@ -108,6 +127,13 @@ def detect_image():
             inference_time = (time.time() - inference_start) * 1000
             logger.info(f"🔍 model() returned in {inference_time:.1f}ms")
 
+            # Initialize depth estimator (lazy loading) - GPU accelerated on RTX 5060
+            depth_init_start = time.time()
+            depth_estimator = get_depth_estimator(force_cpu=False)
+            depth_init_time = (time.time() - depth_init_start) * 1000
+            if depth_init_time > 1.0:
+                logger.info(f"⏱️ Depth estimator init: {depth_init_time:.1f}ms")
+
         except Exception as e:
             logger.error(f"❌ Error during model inference: {e}", exc_info=True)
             raise
@@ -115,6 +141,7 @@ def detect_image():
         logger.info(f"✅ Detection complete, processing {len(results)} result objects...")
 
         # Extract detection data and filter blacklisted classes
+        detection_processing_start = time.time()
         raw_detections = []
         filtered_count = 0
 
@@ -143,13 +170,26 @@ def detect_image():
                     width = x2 - x1
                     height = y2 - y1
 
+                    # Estimate distance using depth estimation (with motion calibration if available)
+                    distance_info = depth_estimator.estimate_distance_with_depth(
+                        image_bgr, bbox_coords, normalized_class_name,
+                        motion_scale=motion_scale,
+                        motion_confidence=motion_confidence
+                    )
+
                     raw_detections.append({
                         'bbox': [x1, y1, width, height],  # LTWH format for tracker
                         'bbox_xyxy': bbox_coords,  # Keep original format too
                         'confidence': confidence,
                         'class_name': normalized_class_name,  # Use normalized name
-                        'class_id': class_id
+                        'class_id': class_id,
+                        'distance': distance_info.get('distance'),  # meters
+                        'distance_confidence': distance_info.get('confidence', 0.0),
+                        'distance_method': distance_info.get('method', 'failed')
                     })
+
+        detection_processing_time = (time.time() - detection_processing_start) * 1000
+        logger.info(f"⏱️ Detection processing (with depth): {detection_processing_time:.1f}ms")
 
         # Filter by confidence threshold FIRST (before dedup)
         raw_detections_before_filtering = len(raw_detections)
@@ -166,18 +206,64 @@ def detect_image():
             logger.info(f"🔄 Deduplication removed {dedup_removed} overlapping same-class detections")
 
         # Apply object tracking if enabled
+        tracking_start = time.time()
         tracked_objects = []
         if tracking_enabled and len(raw_detections) > 0:
             tracking_manager = get_tracking_manager()
 
+            # Selective tracking: Only track objects that need collision analysis
+            if ENABLE_SELECTIVE_TRACKING:
+                frame_area = image_np.shape[0] * image_np.shape[1]
+                detections_to_track = []
+                detections_untracked = []
+
+                for det in raw_detections:
+                    x1, y1, x2, y2 = det['bbox_xyxy']
+                    bbox_area = (x2 - x1) * (y2 - y1)
+                    bbox_area_ratio = bbox_area / frame_area
+
+                    # Track if: important class OR large enough (close to user)
+                    should_track = (
+                        det['class_name'] in SELECTIVE_TRACKING_CLASSES or
+                        bbox_area_ratio >= SELECTIVE_TRACKING_MIN_SIZE
+                    )
+
+                    if should_track:
+                        detections_to_track.append(det)
+                    else:
+                        detections_untracked.append(det)
+
+                if len(detections_untracked) > 0:
+                    logger.info(f"Selective tracking: tracking {len(detections_to_track)}/{len(raw_detections)} objects")
+            else:
+                detections_to_track = raw_detections
+                detections_untracked = []
+
             # Prepare detections for DeepSORT (bbox in ltwh format, confidence, class)
             deepsort_input = [
                 (det['bbox'], det['confidence'], det['class_name'])
-                for det in raw_detections
+                for det in detections_to_track
             ]
 
-            # Update tracker with current frame
+            # Update tracker with current frame (only for selected detections)
             tracks = tracking_manager.update_tracks(session_id, deepsort_input, image_bgr)
+
+            # Helper function to calculate IoU for matching tracks to detections
+            def calculate_iou(bbox1_ltrb, bbox2_xyxy):
+                """Calculate IoU between track bbox (ltrb) and detection bbox (xyxy)."""
+                # bbox1_ltrb: [left, top, right, bottom]
+                # bbox2_xyxy: [x1, y1, x2, y2]
+                x1 = max(bbox1_ltrb[0], bbox2_xyxy[0])
+                y1 = max(bbox1_ltrb[1], bbox2_xyxy[1])
+                x2 = min(bbox1_ltrb[2], bbox2_xyxy[2])
+                y2 = min(bbox1_ltrb[3], bbox2_xyxy[3])
+
+                intersection = max(0, x2 - x1) * max(0, y2 - y1)
+                area1 = (bbox1_ltrb[2] - bbox1_ltrb[0]) * (bbox1_ltrb[3] - bbox1_ltrb[1])
+                area2 = (bbox2_xyxy[2] - bbox2_xyxy[0]) * (bbox2_xyxy[3] - bbox2_xyxy[1])
+                union = area1 + area2 - intersection
+
+                return intersection / union if union > 0 else 0
 
             # Process tracked objects
             for track in tracks:
@@ -206,6 +292,30 @@ def detect_image():
                     image_np.shape[0]
                 )
 
+                # Match track to raw detection by IoU to inherit depth data
+                best_match = None
+                best_iou = 0.3  # Minimum IoU threshold for matching
+                for det in raw_detections:
+                    iou = calculate_iou(ltrb, det['bbox_xyxy'])
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_match = det
+
+                # Use matched detection's depth data if available, otherwise fallback
+                if best_match:
+                    distance_info = {
+                        'distance': best_match.get('distance'),
+                        'confidence': best_match.get('distance_confidence', 0.0),
+                        'method': best_match.get('distance_method', 'failed')
+                    }
+                else:
+                    # Fallback: compute depth for unmatched tracks (rare case)
+                    distance_info = depth_estimator.estimate_distance_with_depth(
+                        image_bgr, ltrb, det_class,
+                        motion_scale=motion_scale,
+                        motion_confidence=motion_confidence
+                    )
+
                 tracked_objects.append({
                     'track_id': track_id,
                     'class_name': det_class,
@@ -215,11 +325,36 @@ def detect_image():
                     'trajectory': trajectory,
                     'movement': movement_info,
                     'collision': collision_info,
-                    'is_confirmed': True
+                    'is_confirmed': True,
+                    'distance': distance_info.get('distance'),  # meters
+                    'distance_confidence': distance_info.get('confidence', 0.0),
+                    'distance_method': distance_info.get('method', 'failed')
                 })
 
-            logger.info(f"Tracking: {len(tracked_objects)} confirmed tracks from {len(raw_detections)} detections")
-        else:
+            logger.info(f"Tracking: {len(tracked_objects)} confirmed tracks from {len(detections_to_track)} tracked detections")
+
+            # Add untracked objects as raw detections (no trajectory/collision data)
+            for det in detections_untracked:
+                tracked_objects.append({
+                    'track_id': None,
+                    'class_name': det['class_name'],
+                    'confidence': det['confidence'],
+                    'bbox': det['bbox_xyxy'],
+                    'center': [(det['bbox_xyxy'][0] + det['bbox_xyxy'][2])/2,
+                              (det['bbox_xyxy'][1] + det['bbox_xyxy'][3])/2],
+                    'trajectory': [],
+                    'movement': None,
+                    'collision': None,
+                    'is_confirmed': False,
+                    'distance': det.get('distance'),
+                    'distance_confidence': det.get('distance_confidence', 0.0),
+                    'distance_method': det.get('distance_method', 'failed')
+                })
+
+        tracking_time = (time.time() - tracking_start) * 1000
+        logger.info(f"⏱️ Tracking pipeline: {tracking_time:.1f}ms")
+
+        if not tracking_enabled or len(raw_detections) == 0:
             # Return raw detections without tracking
             tracked_objects = [{
                 'track_id': None,
@@ -230,7 +365,11 @@ def detect_image():
                           (det['bbox_xyxy'][1] + det['bbox_xyxy'][3])/2],
                 'trajectory': [],
                 'movement': None,
-                'is_confirmed': False
+                'collision': None,
+                'is_confirmed': False,
+                'distance': det.get('distance'),
+                'distance_confidence': det.get('distance_confidence', 0.0),
+                'distance_method': det.get('distance_method', 'failed')
             } for det in raw_detections]
 
         logger.info(f"✅ Detected {len(raw_detections)} objects, tracking {len(tracked_objects)} objects")
@@ -239,12 +378,20 @@ def detect_image():
         if rotation_applied != 0:
             logger.info(f"🔄 Applied {rotation_applied}° rotation correction via {orientation_source}")
 
-        # Check for collision warnings
-        collision_warnings = [obj for obj in tracked_objects if obj.get('collision', {}).get('collision_risk', False)]
+        # Check for collision warnings (filter out None objects if any exist)
+        # First ensure all objects are valid dictionaries
+        tracked_objects = [obj for obj in tracked_objects if obj is not None and isinstance(obj, dict)]
+        # Handle collision being None or missing - only check if it's a valid dict
+        collision_warnings = [obj for obj in tracked_objects
+                            if obj.get('collision') is not None
+                            and isinstance(obj.get('collision'), dict)
+                            and obj.get('collision').get('collision_risk', False)]
         if collision_warnings:
             logger.warning(f"⚠️ Collision warnings: {len(collision_warnings)} objects approaching user")
 
         # Prepare response with explicit type conversion for JSON serialization
+        # Filter out any None objects that may have been added
+        tracked_objects = [obj for obj in tracked_objects if obj is not None]
         response_data = {
             'detections': tracked_objects,  # Now includes tracking and collision info
             'success': True,

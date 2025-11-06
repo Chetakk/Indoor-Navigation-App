@@ -1,0 +1,453 @@
+#+TITLE: Timing Configuration and Real-Time Performance Optimization
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: performance optimization timing latency real-time configuration
+#+RELATED: [[file:20251022110000-tensorrt_optimization.org][TensorRT Optimization]]
+#+RELATED: [[file:../codebase/20251015110900-cv_project_index.org][CV Project Index]]
+
+* Overview
+
+Centralized timing configuration system that balances real-time responsiveness with anti-spam measures. Optimized for 12ms TensorRT inference (down from 70-160ms MiDaS-based system).
+
+* Performance Evolution
+
+** Before Optimization (MiDaS-based)
+
+- Detection inference: 70-160ms per frame
+- Detection loop interval: 300ms
+- Achieved FPS: ~3-4 FPS
+- Total latency: ~400-500ms hazard detection
+
+*Bottleneck:* MiDaS depth estimation (5 FPS max)
+
+** After Optimization (TensorRT + Depth Anything V2)
+
+- Detection inference: 7ms (YOLO) + 5ms (overhead) = 12ms total
+- Detection loop interval: 150ms (doubled frame rate)
+- Achieved FPS: ~6-7 FPS
+- Total latency: ~150-200ms hazard detection
+
+*Speedup:* ~3x faster hazard detection, ~2x higher frame rate
+
+* Timing Configuration Architecture
+
+** Centralized Configuration Object
+
+#+BEGIN_SRC javascript
+const TimingConfig = {
+    detection: { /* detection timing */ },
+    audio: { /* audio timing */ },
+    ui: { /* UI animation timing */ },
+    collision: { /* collision alert timing */ },
+    voice: { /* voice command timing */ },
+    mobile: { /* mobile initialization timing */ },
+    tracking: { /* object tracking timing */ }
+};
+
+Object.freeze(TimingConfig);  // Prevent modifications
+#+END_SRC
+
+*Design Principles:*
+1. *Single Source of Truth*: All delays in one file
+2. *Immutable*: Object.freeze() prevents accidental changes
+3. *Well-Documented*: Comments explain every timing decision
+4. *Globally Accessible*: Exported as ES6 module + window global
+
+** Why Centralized Timing?
+
+*Before:* Magic numbers scattered across codebase
+#+BEGIN_SRC javascript
+// camera.js
+setTimeout(startDetection, 2000);  // Why 2000?
+
+// audio.js
+setTimeout(processQueue, 150);     // Why 150?
+
+// detection.js
+setInterval(detectLoop, 300);      // Why 300?
+#+END_SRC
+
+*After:* Named constants with context
+#+BEGIN_SRC javascript
+// camera.js
+setTimeout(startDetection, TimingConfig.mobile.autoStartDetectionDelay);
+
+// audio.js
+setTimeout(processQueue, TimingConfig.audio.queueProcessDelay);
+
+// detection.js
+setInterval(detectLoop, TimingConfig.detection.loopInterval);
+#+END_SRC
+
+* Detection Timing
+
+** Detection Loop Interval
+
+#+BEGIN_SRC javascript
+detection: {
+    loopInterval: 150,  // OPTIMIZED: was 300ms
+    // ...
+}
+#+END_SRC
+
+*Calculation:*
+- TensorRT inference: 12ms
+- Processing overhead: ~20ms
+- Total frame time: ~32ms
+- Theoretical max FPS: 30 FPS
+
+*Why 150ms?*
+- Allows time for depth estimation (~50ms async)
+- Prevents queue buildup (6-7 FPS sustainable)
+- Leaves CPU headroom for audio/UI
+- Battery-friendly on mobile devices
+
+*Trade-offs:*
+- Faster (50ms): Higher CPU usage, battery drain, queue buildup
+- Slower (300ms): Better battery, but slower hazard detection
+
+** Request Timeout
+
+#+BEGIN_SRC javascript
+requestTimeout: 3000,  // Handles depth model initialization
+#+END_SRC
+
+*Why 3 seconds?*
+- First depth inference loads model (~1.2s)
+- Subsequent inferences are fast (~50ms)
+- Prevents premature timeout on first request
+- Still catches actual network failures
+
+* Audio Timing
+
+** Queue Processing Delay
+
+#+BEGIN_SRC javascript
+audio: {
+    queueProcessDelay: 100,  // OPTIMIZED: was 150ms
+}
+#+END_SRC
+
+*Why 100ms?*
+- Fast enough for real-time feedback
+- Prevents audio queue starvation
+- Allows time for TTS engine processing
+- Balances responsiveness vs. spam
+
+*Audio Queue Architecture:*
+1. Detection finds hazard
+2. Add to audio queue: "Danger, person 2 meters ahead"
+3. Wait 100ms (queue processing delay)
+4. Speak audio
+5. Mark announcement time (prevents re-announcement)
+
+** Test Audio Delay
+
+#+BEGIN_SRC javascript
+testAudioDelay: 2000,  // Delay before fetching test audio
+#+END_SRC
+
+Prevents audio system initialization race condition.
+
+* Collision Alert Timing
+
+** Anti-Spam Tuning
+
+*The Problem:* With 12ms inference, detections update very fast
+- Same object detected every 150ms
+- Without throttling: "Danger. Danger. Danger. Danger..."
+- User overwhelmed with audio spam
+
+*Solution:* Per-object announcement throttling
+
+#+BEGIN_SRC javascript
+collision: {
+    // Alert intervals by severity
+    criticalInterval: 2000,  // INCREASED from 500ms
+    mediumInterval: 2500,    // INCREASED from 1500ms
+    lowInterval: 3000,       // INCREASED from 2500ms
+
+    // Object announcement intervals by distance
+    immediateAnnouncementInterval: 2000,  // < 2 meters
+    nearAnnouncementInterval: 3000,       // 2-5 meters
+    mediumAnnouncementInterval: 5000,     // 5-10 meters
+    farAnnouncementInterval: 7000,        // > 10 meters
+}
+#+END_SRC
+
+** Announcement Throttling Algorithm
+
+#+BEGIN_SRC javascript
+function shouldAnnounce(trackId, distance) {
+    const lastAnnouncement = announcementTimes.get(trackId);
+    const now = Date.now();
+
+    let interval;
+    if (distance < 2) {
+        interval = TimingConfig.collision.immediateAnnouncementInterval;
+    } else if (distance < 5) {
+        interval = TimingConfig.collision.nearAnnouncementInterval;
+    } else if (distance < 10) {
+        interval = TimingConfig.collision.mediumAnnouncementInterval;
+    } else {
+        interval = TimingConfig.collision.farAnnouncementInterval;
+    }
+
+    if (!lastAnnouncement || (now - lastAnnouncement) > interval) {
+        announcementTimes.set(trackId, now);
+        return true;
+    }
+
+    return false;
+}
+#+END_SRC
+
+*Design:* Closer objects announced more frequently (more urgent)
+
+** Stationary Object Timing
+
+#+BEGIN_SRC javascript
+stationaryThreshold: 10000,   // Time before announcing stationary
+stationaryReannounce: 15000,  // Re-announcement interval
+#+END_SRC
+
+*Rationale:*
+- Don't announce static objects immediately (not urgent)
+- Wait 10 seconds to confirm object is truly stationary
+- Re-announce every 15 seconds (gentle reminder)
+
+Example: Park bench
+- Detected at t=0s, moving
+- Detected at t=10s, stationary -> Announce: "Bench 3 meters ahead"
+- Detected at t=25s, still stationary -> Re-announce
+
+* Tracking Timing
+
+** Stale Object Threshold
+
+#+BEGIN_SRC javascript
+tracking: {
+    staleThreshold: 1500,  // OPTIMIZED: was 3000ms
+}
+#+END_SRC
+
+*Why 1500ms?*
+- With 150ms detection interval, object should appear every 150ms
+- If not seen for 10 frames (1500ms), likely gone
+- Faster cleanup prevents announcing stale objects
+
+*Before (3000ms):*
+- Person walks away at t=0s
+- Still tracked until t=3s
+- Audio announces "Person approaching" at t=2s (false!)
+
+*After (1500ms):*
+- Person walks away at t=0s
+- Marked stale at t=1.5s
+- No false announcements
+
+* UI Animation Timing
+
+** Animation Durations
+
+#+BEGIN_SRC javascript
+ui: {
+    statsAnimationDuration: 200,
+    fpsAnimationDuration: 200,
+    realtimeStatsAnimationDuration: 200,
+    detectionResultsFadeDelay: 200,
+}
+#+END_SRC
+
+*Why 200ms?*
+- Perceivable animation (not instant)
+- Not so slow as to feel sluggish
+- Matches typical UI transition standards
+- Avoids animation queue buildup
+
+* Voice Command Timing
+
+** Recognition Restart Delays
+
+#+BEGIN_SRC javascript
+voice: {
+    errorRestartDelay: 1000,   // After error
+    autoRestartDelay: 500,     // After recognition ends
+}
+#+END_SRC
+
+*Why Different Delays?*
+- *Error restart (1000ms):* Give user time to see error message
+- *Auto restart (500ms):* Seamless continuous recognition
+
+** Initialization Delays
+
+#+BEGIN_SRC javascript
+initDelay: 3000,           // Before initializing voice
+activeMessageDelay: 5000,  // "Voice commands active" announcement
+#+END_SRC
+
+Prevents race condition with audio system initialization.
+
+* Mobile Timing
+
+** Gyroscope Initialization
+
+#+BEGIN_SRC javascript
+mobile: {
+    gyroscopePromptDelay: 2000,
+    gyroscopePermissionAlertDelay: 1500,
+}
+#+END_SRC
+
+*Why delays?*
+- Browser needs time to load page before permission prompt
+- Prevents iOS "blocked permission request" error
+- Gives user context before asking for permissions
+
+** Auto-Start Behavior
+
+#+BEGIN_SRC javascript
+autoStartDetectionDelay: 2000,  // Auto-start camera detection
+detailsAutoHideDelay: 3000,     // Auto-hide project details
+#+END_SRC
+
+Mobile UX optimization: Start detection automatically after brief delay.
+
+* Performance Measurement
+
+** FPS Calculation
+
+#+BEGIN_SRC javascript
+const fpsUpdateInterval = 2000;  // Update every 2 seconds
+
+let frameCount = 0;
+let lastFpsUpdate = Date.now();
+
+function updateFPS() {
+    frameCount++;
+
+    const now = Date.now();
+    const elapsed = now - lastFpsUpdate;
+
+    if (elapsed >= fpsUpdateInterval) {
+        const fps = (frameCount / elapsed) * 1000;
+        displayFPS(fps);
+
+        frameCount = 0;
+        lastFpsUpdate = now;
+    }
+}
+#+END_SRC
+
+*Why 2 second window?*
+- Smooth FPS display (not jittery)
+- Recent enough to reflect current performance
+- Not too slow to detect performance drops
+
+* Latency Breakdown
+
+** Total User-Perceived Latency
+
+#+BEGIN_EXAMPLE
+User moves -> Hazard appears -> Audio warning
+
+1. Detection loop interval: 150ms (wait for next frame)
+2. Frame capture: ~10ms
+3. Network transmission: ~20ms
+4. YOLO inference: 7ms
+5. Depth estimation: 50ms (async, from cache)
+6. Post-processing: 5ms
+7. Network response: ~20ms
+8. Audio queue: 100ms
+9. TTS rendering: ~50ms
+
+Total: ~412ms worst case
+Typical: ~200-250ms (if depth cached)
+#+END_EXAMPLE
+
+*Optimization Targets:*
+- Detection loop (150ms) - Already optimized
+- Network (40ms) - Move to WebSockets?
+- Audio queue (100ms) - Priority queue for critical alerts?
+
+* Timing Tuning Methodology
+
+** Empirical Measurement
+
+1. *Instrument code*: Add performance.now() timestamps
+2. *Collect data*: Run typical usage scenarios
+3. *Analyze distribution*: p50, p95, p99 latencies
+4. *Identify bottlenecks*: Which stage dominates latency?
+5. *Iterate*: Adjust timing, re-measure
+
+** User Testing
+
+Timing that feels good in code may not feel good in practice:
+- Have blind users test with different intervals
+- Measure: Obstacle avoidance success rate
+- Adjust based on feedback
+
+** Battery Impact Testing
+
+#+BEGIN_EXAMPLE
+Test scenarios:
+- 150ms loop @ 6 FPS vs. 300ms loop @ 3 FPS
+- Measure: Battery drain over 1 hour
+- Trade-off: Performance vs. battery life
+#+END_EXAMPLE
+
+* Configuration Management
+
+** Environment-Specific Tuning
+
+#+BEGIN_SRC javascript
+const TimingConfig = {
+    detection: {
+        loopInterval: IS_PRODUCTION ? 150 : 300,  // Slower in dev
+    }
+};
+#+END_SRC
+
+** A/B Testing
+
+#+BEGIN_SRC javascript
+const variant = user.experimentVariant;
+const loopInterval = variant === 'A' ? 150 : 100;
+#+END_SRC
+
+Measure which timing configuration yields better outcomes.
+
+* Future Enhancements
+
+1. *Adaptive Timing*: Adjust based on device performance
+   #+BEGIN_SRC javascript
+   if (avgInferenceTime > 50) {
+       loopInterval = 300;  // Slow device, reduce load
+   }
+   #+END_SRC
+
+2. *Battery-Aware Timing*: Slower loop when battery < 20%
+
+3. *Network-Aware Timing*: Adjust timeouts based on RTT
+
+4. *User Preferences*: Allow customization of announcement intervals
+
+* Implementation Files
+
+- app/static/js/modules/timingConfig.js - Centralized timing configuration
+- app/static/js/modules/detection.js - Detection loop timing
+- app/static/js/modules/audio.js - Audio timing
+- app/static/js/modules/collision.js - Collision alert timing (if exists)
+
+* References
+- [[file:20251022110000-tensorrt_optimization.org][TensorRT Optimization]]
+- [[file:../depth/20251019110200-depth_anything_v2.org][Depth Anything V2]]
+- [[file:../async/async-architecture.org][Async Architecture]]
+
+* Footnotes
+
+[fn:1] Frame Rate vs. Latency: Higher frame rate doesn't always mean lower latency. Latency = time from event to response. Frame rate = samples per second.
+
+[fn:2] Throttling: Rate limiting technique to prevent excessive API calls or actions. Common in real-time systems to balance responsiveness and resource usage.
+
+[fn:3] Jitter: Variability in latency. High jitter causes inconsistent user experience even if average latency is low.

@@ -1,0 +1,188 @@
+:PROPERTIES:
+:ID:       20251019110400-tensor_cores
+:ROAM_ALIASES: "Tensor Cores" "NVIDIA Tensor Cores"
+:END:
+#+title: NVIDIA Tensor Cores
+#+filetags: :gpu_optimization:hardware:tensor_cores:
+
+* Concept
+
+Tensor Cores are specialized hardware units in NVIDIA GPUs designed to accelerate matrix multiplication operations common in deep learning. They perform mixed-precision matrix math ~8x faster than standard CUDA cores.
+
+* Architecture
+
+** Standard CUDA Cores
+- General-purpose floating point units
+- Execute one FP32 operation per clock cycle
+- FP32: =A * B + C= takes 1 cycle
+
+** Tensor Cores (3rd Gen in RTX 5060)
+- Specialized matrix multiplication units
+- Execute 4x4 matrix multiply-accumulate per cycle
+- FP16: =D = A * B + C= (4x4 matrices) in 1 cycle
+- Effective throughput: 64 FP16 operations per cycle!
+
+* Evolution
+
+| Generation | Architecture | FP16 TFLOPS | Key Feature                    |
+|------------+--------------+-------------+--------------------------------|
+| 1st Gen    | Volta        | 125         | Basic FP16 matrix ops          |
+| 2nd Gen    | Turing       | 89          | INT8/INT4 support              |
+| 3rd Gen    | Ampere       | 238         | FP64, sparsity                 |
+| 4th Gen    | Ada (RTX 40) | 641         | FP8, transformer acceleration  |
+
+RTX 5060 has 3rd Gen Tensor Cores (Ampere architecture).
+
+* How Tensor Cores Work
+
+** Matrix Multiply-Accumulate (MMA)
+#+BEGIN_EXAMPLE
+Input A (4x4, FP16) * Input B (4x4, FP16) + Input C (4x4, FP32)
+-> Output D (4x4, FP32)
+
+All in ONE clock cycle!
+#+END_EXAMPLE
+
+** Why This Helps Deep Learning
+Neural networks are 90% matrix multiplications:
+- Fully connected layers: W * x
+- Convolutions: kernel * feature map
+- Attention: Q * K^T, Q * V
+
+Tensor Cores accelerate ALL of these.
+
+* Precision Support
+
+** FP16 (What We Use)
+- Input: FP16 (half precision)
+- Accumulation: FP32 (full precision)
+- Output: FP16 or FP32
+- Speedup: ~8x over FP32 CUDA cores
+
+** Other Precisions
+- TF32: Tensor Float 32 (8-bit exponent, 10-bit mantissa)
+- INT8: 8-bit integer (quantized models)
+- INT4: 4-bit integer (extreme quantization)
+- FP8: 8-bit float (4th gen only)
+
+* Utilization Requirements
+
+For Tensor Cores to be used:
+1. Matrix dimensions must be multiples of 8 (for FP16)
+2. Data must be in FP16 format
+3. Operation must be matrix multiplication
+4. PyTorch/TensorRT must detect and use them
+
+PyTorch automatically uses Tensor Cores when:
+- Model is in FP16 (=model.half()=)
+- Inputs are FP16
+- =torch.amp.autocast()= is enabled
+
+* Performance on RTX 5060
+
+** Specs
+- 3584 CUDA cores
+- 112 Tensor Cores (3rd Gen)
+- FP16 performance: ~142 TFLOPS
+- FP32 performance: ~18 TFLOPS
+- Ratio: *8x faster in FP16!*
+
+** Our Results
+- Depth Anything V2 inference
+- FP32: 48.42ms
+- FP16: 12.68ms
+- Actual speedup: *3.82x*
+
+Why not 8x?
+- Not all operations are matrix multiplication
+- Memory bandwidth still matters
+- Some overhead from data conversion
+
+* How to Enable
+
+** PyTorch (Our Approach)
+#+BEGIN_SRC python
+# Convert model to FP16
+model = model.half()
+
+# Use autocast for automatic mixed precision
+with torch.amp.autocast('cuda'):
+    output = model(input.half())
+#+END_SRC
+
+** TensorRT
+#+BEGIN_SRC python
+# Enable FP16 during TensorRT optimization
+config.set_flag(trt.BuilderFlag.FP16)
+#+END_SRC
+
+** CUDA (Low-Level)
+#+BEGIN_SRC cpp
+// Use wmma namespace (warp matrix multiply-accumulate)
+#include <mma.h>
+using namespace nvcuda::wmma;
+
+// Load matrices into Tensor Core registers
+fragment<matrix_a, 16, 16, 16, half, row_major> a_frag;
+load_matrix_sync(a_frag, a_ptr, 16);
+
+// Perform matrix multiplication
+mma_sync(c_frag, a_frag, b_frag, c_frag);
+#+END_SRC
+
+* When Tensor Cores Help Most
+
+Best case:
+- Large matrix multiplications (transformer layers)
+- Batch processing (multiple images at once)
+- FP16-friendly operations
+
+Less helpful:
+- Element-wise operations (ReLU, batch norm)
+- Memory-bound operations (loading weights)
+- Small matrices (<8x8)
+
+* Trade-offs
+
+** Pros
+- 8x theoretical speedup for matrix ops
+- No algorithm changes needed
+- Minimal accuracy loss
+- Enabled with simple API
+
+** Cons
+- Requires modern GPU (Volta+)
+- FP16 precision limits (overflow risk)
+- Not all operations accelerated
+- Warm-up time for first inference
+
+* Related Notes
+
+- [[id:20251019110300-fp16_mixed_precision][FP16 Mixed Precision]] - How we use Tensor Cores
+- [[id:20251019110200-depth_anything_v2][Depth Anything V2]] - Model accelerated by Tensor Cores
+
+* Real-World Impact
+
+For our blind navigation system:
+- Depth inference: 48ms -> 12ms (3.82x faster)
+- Enables real-time processing (<15ms target)
+- Critical for safety: faster = more responsive warnings
+
+* Verification
+
+Check if Tensor Cores are being used:
+#+BEGIN_SRC python
+# PyTorch will log Tensor Core usage
+torch.backends.cudnn.benchmark = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
+# Profile with NVIDIA Nsight
+# Look for "Tensor Core utilization" metric
+#+END_SRC
+
+* References
+
+- NVIDIA Tensor Cores: https://www.nvidia.com/en-us/data-center/tensor-cores/
+- WMMA API: https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#wmma
+- PyTorch AMP: https://pytorch.org/docs/stable/amp.html
+- RTX 5060 specs: https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/

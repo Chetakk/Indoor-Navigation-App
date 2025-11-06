@@ -243,9 +243,9 @@ def calculate_reactive_navigation(detections, goal, start, image_width, image_he
     """
     # Calculate direct vector to goal
     goal_vector = np.array([goal[0] - start[0], goal[1] - start[1]], dtype=float)
-    distance_to_goal = np.linalg.norm(goal_vector)
+    distance_to_goal_pixels = np.linalg.norm(goal_vector)
 
-    if distance_to_goal < 1:
+    if distance_to_goal_pixels < 1:
         return {
             'reached_goal': bool(True),
             'message': 'Goal reached',
@@ -255,7 +255,11 @@ def calculate_reactive_navigation(detections, goal, start, image_width, image_he
         }
 
     # Normalize goal direction
-    goal_direction = goal_vector / distance_to_goal
+    goal_direction = goal_vector / distance_to_goal_pixels
+
+    # Convert pixel distance to rough meters estimate
+    # Note: This is still approximate as we don't have depth to goal point
+    distance_to_goal_meters = distance_to_goal_pixels / 100  # rough estimate
 
     # Analyze obstacles in the scene
     obstacles = []
@@ -271,13 +275,39 @@ def calculate_reactive_navigation(detections, goal, start, image_width, image_he
 
         # Vector from user to obstacle
         to_obstacle = obs_center - np.array(start)
-        distance_to_obs = np.linalg.norm(to_obstacle)
+        distance_to_obs_pixels = np.linalg.norm(to_obstacle)
 
-        if distance_to_obs < 1:
+        if distance_to_obs_pixels < 1:
             continue  # Skip if too close (likely invalid)
 
         # Normalize
-        direction_to_obs = to_obstacle / distance_to_obs
+        direction_to_obs = to_obstacle / distance_to_obs_pixels
+
+        # Use real distance from depth estimation if available
+        real_distance = det.get('distance')  # meters from depth estimation
+
+        # Validate distance and use bbox heuristic fallback if needed
+        if real_distance is None or real_distance <= 0:
+            # Bbox heuristic: estimate distance from bbox size and position
+            bbox_area = obs_width * obs_height
+            image_area = image_width * image_height
+            area_ratio = bbox_area / image_area
+
+            if area_ratio > 0.01:
+                # Larger objects = closer, smaller objects = farther
+                real_distance = 5.0 / np.sqrt(area_ratio)
+
+                # Adjust by vertical position (lower in frame = closer)
+                bbox_center_y = (y1 + y2) / 2
+                vertical_position = bbox_center_y / image_height
+                position_factor = 0.7 + (vertical_position * 0.6)
+                real_distance *= position_factor
+
+                # Clamp to reasonable range
+                real_distance = np.clip(real_distance, 0.5, 20.0)
+            else:
+                # Last resort: pixel-based estimate
+                real_distance = distance_to_obs_pixels / 100  # rough pixel-to-meter
 
         # Calculate if obstacle is in our path (using dot product)
         alignment_with_goal = np.dot(direction_to_obs, goal_direction)
@@ -287,10 +317,13 @@ def calculate_reactive_navigation(detections, goal, start, image_width, image_he
         velocity = det.get('velocity', [0, 0])
 
         obstacles.append({
-            'label': det.get('label', 'object'),
+            'label': det.get('class_name', det.get('label', 'object')),
             'center': obs_center.tolist(),
             'size': float(obs_size),
-            'distance': float(distance_to_obs),
+            'distance': float(real_distance),  # NOW IN METERS!
+            'distance_pixels': float(distance_to_obs_pixels),  # Keep for legacy
+            'distance_confidence': det.get('distance_confidence', 0.0),  # Confidence score
+            'distance_method': det.get('distance_method', 'bbox_heuristic'),  # Estimation method
             'direction': direction_to_obs.tolist(),
             'alignment_with_goal': float(alignment_with_goal),
             'is_moving': bool(is_moving),
@@ -319,19 +352,27 @@ def calculate_reactive_navigation(detections, goal, start, image_width, image_he
         image_height
     )
 
-    # Generate voice guidance
+    # Check depth confidence - warn if using low-quality depth data
+    low_confidence_obstacles = [
+        obs for obs in obstacles[:5]
+        if obs.get('distance_confidence', 0) < 0.3 and obs['in_path']
+    ]
+
+    # Generate voice guidance (use meters for distance)
     guidance = generate_voice_guidance(
         safe_direction,
         goal_direction,
-        distance_to_goal,
-        obstacles
+        distance_to_goal_meters,
+        obstacles,
+        low_confidence_count=len(low_confidence_obstacles)
     )
 
     return {
         'reached_goal': bool(False),
         'safe_direction': safe_direction.tolist(),
         'goal_direction': goal_direction.tolist(),
-        'distance_to_goal': float(distance_to_goal),
+        'distance_to_goal': float(distance_to_goal_meters),  # NOW IN METERS!
+        'distance_to_goal_pixels': float(distance_to_goal_pixels),  # Keep for legacy
         'obstacles': obstacles[:5],  # Top 5 most threatening
         'guidance': guidance,
         'deviation_angle': float(np.degrees(np.arccos(np.clip(np.dot(safe_direction, goal_direction), -1, 1))))
@@ -402,15 +443,16 @@ def find_safe_direction(goal_direction, obstacles, start, image_width, image_hei
     return best_direction
 
 
-def generate_voice_guidance(safe_direction, goal_direction, distance_to_goal, obstacles):
+def generate_voice_guidance(safe_direction, goal_direction, distance_to_goal, obstacles, low_confidence_count=0):
     """
     Generate human-readable voice guidance for navigation.
 
     Args:
         safe_direction: Safe walking direction
         goal_direction: Direct direction to goal
-        distance_to_goal: Distance to goal in pixels
+        distance_to_goal: Distance to goal in meters
         obstacles: List of obstacles
+        low_confidence_count: Number of obstacles with low depth confidence
 
     Returns:
         dict: Voice guidance with primary message and warnings
@@ -424,35 +466,38 @@ def generate_voice_guidance(safe_direction, goal_direction, distance_to_goal, ob
     elif deviation_angle < 30:
         # Determine left or right
         cross = np.cross(goal_direction, safe_direction)
-        side = "slightly right" if cross > 0 else "slightly left"
+        side = "slightly left" if cross > 0 else "slightly right"
         direction_text = f"Bear {side}"
     else:
         cross = np.cross(goal_direction, safe_direction)
-        side = "right" if cross > 0 else "left"
+        side = "left" if cross > 0 else "right"
         direction_text = f"Turn {side}"
 
-    # Distance estimation (very rough - pixels to meters conversion is approximate)
-    estimated_meters = distance_to_goal / 100  # Assume ~100 pixels = 1 meter (very rough)
-
-    if estimated_meters < 2:
+    # Distance is now in REAL METERS from depth estimation!
+    # No more pixel conversions needed
+    if distance_to_goal < 2:
         distance_text = "almost there"
-    elif estimated_meters < 5:
-        distance_text = f"{int(estimated_meters)} meters"
+    elif distance_to_goal < 5:
+        distance_text = f"{int(distance_to_goal)} meters"
     else:
-        distance_text = f"{int(estimated_meters)} meters ahead"
+        distance_text = f"{int(distance_to_goal)} meters ahead"
 
-    # Check for immediate obstacles
+    # Check for immediate obstacles (distance now in METERS!)
     warnings = []
     for obs in obstacles[:3]:  # Check top 3 threats
-        if obs['in_path'] and obs['distance'] < 150:  # Close obstacle in path
+        if obs['in_path'] and obs['distance'] < 3:  # Close obstacle in path (3 meters)
             # Determine position relative to user
             obs_dir = np.array(obs['direction'])
             cross = np.cross(safe_direction, obs_dir)
-            side = "right" if cross > 0 else "left"
+            side = "left" if cross > 0 else "right"
 
             label = obs['label']
             moving_text = "moving " if obs['is_moving'] else ""
             warnings.append(f"{moving_text}{label} on {side}")
+
+    # Add depth confidence warning if depth data is uncertain
+    if low_confidence_count > 0:
+        warnings.append("distance approximate, low sensor confidence")
 
     # Build complete guidance
     primary_message = f"{direction_text}, {distance_text}"

@@ -12,7 +12,15 @@
       "Bash(awk:*)",
       "Bash(git checkout:*)",
       "Read(//c/Users/parik/OneDrive/Documents/GitHub/CV-Project/utilities/**)",
-      "Bash(move:*)"
+      "Bash(move:*)",
+      "Bash(powershell:*)",
+      "Bash(nvidia-smi)",
+      "Bash(del yolov8n-oiv7.engine)",
+      "Bash(cat tensorrt_build.log)",
+      "Bash(tee tensorrt_rebuild.log)",
+      "Bash(curl -k https://192.168.1.14:5000/admin/cameras/list)",
+      "Bash(netstat:*)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

@@ -13,6 +13,17 @@ This file (Documentation.org) contains the complete technical documentation of t
 For quick technical navigation and function reference, see:
 - [[file:docs/DEVELOPER_HANDBOOK.org][DEVELOPER_HANDBOOK.org]] - Complete developer reference with file structure, function index, and quick lookup tables
 
+** Knowledge Base (Zettelkasten)
+For comprehensive technical documentation, theoretical foundations, and implementation details, see:
+- [[file:zettelkasten/INDEX.org][Zettelkasten Master Index]] - 70+ interconnected notes covering object detection, depth estimation, optimization, architecture, and more
+
+Key Topic Areas:
+- *Object Detection*: YOLO architecture, CNN fundamentals, post-processing (17 notes)
+- *Depth Estimation*: Monocular depth, Depth Anything V2, calibration (9 notes)
+- *Optimization*: TensorRT, timing configuration, ONNX format (5 notes)
+- *Architecture*: Camera registry, server monitoring, async processing (6+ notes)
+- *Dataset/Training*: CVAT, annotation formats, Open Images V7 (11 notes)
+
 ** Change History
 For a complete chronological record of all changes, improvements, and development history, see:
 - [[file:Changelog.org][Changelog.org]] - Complete development history organized by date and time
@@ -32,6 +43,8 @@ Key features include:
 - Collision prediction and warning system
 - A* pathfinding for safe navigation routes
 - Web-based interface accessible from any device with a camera
+- Dashboard monitoring system for admin/helper staff with live camera feeds
+- Voice-controlled privacy mode for camera streaming
 
 The system achieves near-real-time performance (800ms detection cycle) on CPU, making it practical for deployment on consumer hardware while maintaining safety-critical response times for blind navigation.
 
@@ -291,11 +304,12 @@ CVFlaskVariation/
 *** 1. Model Initialization (app/services/yolo_detector.py)
 
 #+BEGIN_SRC python
-# Load YOLO model with CPU enforcement
+# Load YOLO model with multi-format support
 class YOLODetector:
     def __init__(self, model_path='yolov8x-oiv7.pt', force_cpu=True):
         self.model = YOLO(model_path)
-        self.model.to('cpu')  # Force CPU to avoid GPU hanging issues
+        # Supports .pt (PyTorch), .onnx (ONNX), .engine (TensorRT)
+        self.model.to('cpu' if force_cpu else 'cuda')
 #+END_SRC
 
 *Purpose:* Loads the YOLOv8x model pre-trained on Open Images v7 dataset.
@@ -306,11 +320,26 @@ class YOLODetector:
 - Currently forced to CPU due to GPU stability issues
 - Model weights file: ~yolov8x-oiv7.pt~
 - Singleton pattern for efficient memory usage
+- *NEW (2025-10-17):* TensorRT support for GPU acceleration
 
-*Performance:*
-- CPU inference: ~100-250ms per frame
-- GPU inference (when enabled): ~60-100ms per frame
-- Trade-off: Accuracy vs. Speed (x-large for accuracy)
+*Supported Model Formats:*
+- *.pt:* PyTorch format (default, 136 MB)
+- *.onnx:* ONNX format (cross-platform)
+- *.engine:* TensorRT engine (GPU-optimized, 2-4x faster)
+
+*Performance Comparison:*
+| Format            | Device | Inference Time | Speedup |
+|-------------------+--------+----------------+---------|
+| PyTorch (.pt)     | CPU    | 80-160ms       | 1.0x    |
+| PyTorch (.pt)     | GPU    | 30-70ms        | 2.3x    |
+| TensorRT (.engine)| GPU    | 15-40ms        | 4.0x    |
+| TensorRT FP16     | GPU    | 10-25ms        | 6.4x    |
+
+*TensorRT Optimization:*
+- Requires NVIDIA GPU with CUDA support
+- Engine files are GPU-specific (cannot transfer between machines)
+- FP16 precision provides 2x speedup with minimal accuracy loss
+- See TENSORRT_SETUP.md for conversion instructions
 
 *** 2. Session-Based Tracker Management (app/services/object_tracker.py)
 
@@ -321,27 +350,59 @@ class ObjectTrackingManager:
         self.track_histories = defaultdict(lambda: deque(maxlen=30))
 
     def get_tracker(self, session_id):
-        """Get or create a tracker for a session"""
+        """Get or create a tracker for a session with fallback options"""
         if session_id not in self.trackers:
             use_gpu = torch.cuda.is_available()
-            self.trackers[session_id] = DeepSort(
-                max_age=30,              # Keep tracks alive for 30 frames
-                n_init=3,                # 3 detections to confirm track
-                nms_max_overlap=0.7,     # NMS threshold
-                max_cosine_distance=0.4, # Re-ID threshold
-                nn_budget=100,           # Feature gallery size
-                embedder="mobilenet",    # Feature extractor
-                half=True,               # FP16 for speed
-                embedder_gpu=use_gpu
-            )
+            tracker = None
+            error_messages = []
+
+            # Option 1: Try GPU with half precision (fastest)
+            if use_gpu:
+                try:
+                    tracker = DeepSort(
+                        max_age=10, n_init=2, nms_max_overlap=0.7,
+                        max_cosine_distance=0.25, nn_budget=100,
+                        embedder="mobilenet", half=True, embedder_gpu=True
+                    )
+                except Exception as e:
+                    error_messages.append(f"GPU+half failed: {str(e)}")
+
+            # Option 2: Try GPU without half precision (fast)
+            if tracker is None and use_gpu:
+                try:
+                    tracker = DeepSort(
+                        max_age=10, n_init=2, nms_max_overlap=0.7,
+                        max_cosine_distance=0.25, nn_budget=100,
+                        embedder="mobilenet", half=False, embedder_gpu=True
+                    )
+                except Exception as e:
+                    error_messages.append(f"GPU failed: {str(e)}")
+
+            # Option 3: Fallback to CPU mode (reliable)
+            if tracker is None:
+                tracker = DeepSort(
+                    max_age=10, n_init=2, nms_max_overlap=0.7,
+                    max_cosine_distance=0.25, nn_budget=100,
+                    embedder="mobilenet", half=False, embedder_gpu=False
+                )
+
+            self.trackers[session_id] = tracker
 #+END_SRC
 
-*Purpose:* Manages separate DeepSORT trackers for each user session.
+*Purpose:* Manages separate DeepSORT trackers for each user session with robust error handling.
 
 *Why Session-Based:*
 - Allows multiple simultaneous users
 - Each user has independent tracking state
 - Prevents track ID conflicts between users
+
+*Fallback Strategy (UPDATED 2025-10-19):*
+Implements three-tier initialization to handle GPU/embedder failures:
+1. *GPU + FP16:* Fastest option, tries first if GPU available
+2. *GPU + FP32:* Falls back if FP16 fails (e.g., meta tensor error)
+3. *CPU Mode:* Guaranteed fallback if all GPU attempts fail
+
+This prevents "Cannot copy out of meta tensor; no data!" errors that occurred when PyTorch created the MobileNetV2 embedder model as a meta tensor (metadata without actual weights). The fallback ensures tracking always works, even with library version incompatibilities.
 
 *DeepSORT Parameters Explained:*
 - max_age=10: Track survives 10 frames without detection (UPDATED 2025-10-15: reduced from 30 to prevent false track associations during quick camera panning)
@@ -350,7 +411,7 @@ class ObjectTrackingManager:
 - max_cosine_distance=0.25: Maximum cosine distance between appearance features for matching (UPDATED 2025-10-15: reduced from 0.4 for stricter appearance matching and better discrimination between similar objects)
 - nn_budget=100: Maximum number of appearance features stored per track
 - embedder="mobilenet": Uses MobileNet for extracting appearance features
-- half=True: Uses FP16 precision for 2x speed improvement
+- half=True/False: Uses FP16 precision for 2x speed (when GPU+FP16 successful)
 
 *** 3. Class Normalization and Filtering (app/constants.py & app/utils/filtering.py)
 
@@ -821,6 +882,10 @@ The detection and tracking system combines multiple computer vision techniques:
 2. *Class normalization:* Map similar classes (man/woman -> person)
 3. *Format conversion:* XYXY -> LTWH for DeepSORT
 4. *Deduplication:* IoU-based removal of overlapping same-class detections
+5. *Defensive filtering:* Remove None/invalid objects before collision detection (ADDED 2025-10-30)
+   - Double-checks tracked_objects list for None values
+   - Prevents AttributeError crashes in collision warning system
+   - Defense-in-depth approach with filtering at multiple stages
 
 ** Multi-Object Tracking (Detailed)
 
@@ -918,11 +983,104 @@ New Detection -> Tentative (hits=1, age=0)
 - Assumes no sudden stops/turns
 - 10-frame horizon (~8 seconds at 800ms intervals)
 
-** Pathfinding (A* Algorithm)
+** Navigation System
 
-*** Occupancy Grid Creation
+The system uses reactive navigation for real-time obstacle avoidance with session-based position tracking.
 
-*Process:*
+*** Position Tracking (Updated 2025-10-22)
+
+*Session-Based User Position:*
+The navigation system tracks camera/user position using vision-based odometry from object detections:
+
+#+BEGIN_SRC python
+# Stored in Flask session per session_id:
+position_key = f'nav_position_{session_id}'           # Current [x, y] position
+timestamp_key = f'nav_timestamp_{session_id}'         # Last update timestamp
+goal_key = f'nav_goal_{session_id}'                   # Current goal coordinates
+prev_detections_key = f'nav_prev_detections_{session_id}'  # Previous frame for comparison
+#+END_SRC
+
+*Vision-Based Position Tracking (Primary Method):*
+
+The system uses visual odometry from tracked objects and depth estimation:
+
+#+BEGIN_SRC python
+def estimate_camera_movement(detections, previous_detections, previous_position):
+    1. Match tracked objects between frames (by track_id)
+    2. For each matched object with good depth data (confidence > 0.3):
+       - Calculate distance_change = prev_distance - curr_distance
+       - Negative change: camera moved toward object
+       - Positive change: camera moved away from object
+    3. Convert distance change to pixel movement (100 pixels per meter)
+    4. Calculate movement vector: direction_to_object * pixel_movement
+    5. Weighted average of all estimates (weight by distance_confidence)
+    6. Return new_position and overall confidence score
+#+END_SRC
+
+*Requirements for Vision-Based Tracking:*
+- Minimum 2 tracked objects with track_id
+- Both frames must have distance confidence > 0.3
+- Distance change > 0.1 meters (filters noise)
+- Valid bounding boxes for object center calculation
+
+*Time-Based Fallback:*
+When vision confidence is low (<= 0.3):
+- Calculate time elapsed since last update
+- Assume movement toward goal direction
+- Speed: 100 pixels/second (approx 1 meter/second)
+- Update: new_pos = old_pos + goal_direction * speed * time
+
+*Hybrid Approach Benefits:*
+- Primary: Real visual odometry from scene
+- No assumption user follows directions
+- Works with any camera movement (forward, backward, sideways, turning)
+- Fallback: Time-based when tracking insufficient
+- Graceful degradation in challenging scenarios
+
+*Session Management:*
+- Position persists across navigation requests
+- Previous detections stored for frame comparison
+- Goal change resets position to starting point
+- /reset_navigation clears all tracking data
+- Session cleared when goal is reached
+
+*** Reactive Navigation
+
+*Real-time obstacle avoidance designed for dynamic environments:*
+
+*Algorithm:*
+1. Calculate direct vector to goal
+2. Analyze obstacles in scene:
+   - Distance (from depth estimation or bbox heuristic)
+   - Direction relative to goal path
+   - Movement state (static vs. moving)
+   - Threat score = proximity + alignment + movement
+3. Sample 16 candidate directions (-90 to +90 degrees)
+4. Score each direction:
+   - Bonus: Alignment with goal (+10 points)
+   - Penalty: Obstacle proximity and alignment
+   - Penalty: Moving obstacles (1.5x multiplier)
+   - Penalty: Near screen edges
+5. Select best direction (highest score)
+6. Generate voice guidance based on deviation angle
+
+*Voice Guidance Generation:*
+- <10 degrees: "Walk straight ahead"
+- 10-30 degrees: "Bear slightly left/right"
+- >30 degrees: "Turn left/right"
+- Distance: Real meters from depth estimation
+- Warnings: Obstacles within 3 meters in path
+
+*Side Detection (Fixed 2025-10-30):*
+- Uses cross product of goal_direction and safe_direction vectors
+- Positive cross product = object/direction is LEFT of reference
+- Negative cross product = object/direction is RIGHT of reference
+- Applied to both navigation directions and obstacle warnings
+- Previous bug: left/right were inverted, now corrected
+
+*** A* Pathfinding (Legacy Static Mode)
+
+*Occupancy Grid Creation:*
 1. Discretize image into 20x20 pixel grid cells
 2. Mark cells occupied by bounding boxes as obstacles
 3. Apply binary dilation (1 iteration) for safety margin
@@ -1019,7 +1177,7 @@ This project is specifically designed for visually impaired individuals with com
 - "start" or "begin" - Start camera and detection
 - "stop" or "pause" - Stop detection
 - "where am I" or "what's around me" - Announce all currently detected objects
-- "find [object]" - Find and navigate to specific objects (NEW: 2025-10-12)
+- "find [object]" - Find and navigate to specific objects (ENHANCED: 2025-10-21)
   * "find door" - Finds nearest door and sets navigation path
   * "find chair" - Finds nearest chair and sets navigation path
   * "find bench" - Finds nearest bench and sets navigation path
@@ -1029,29 +1187,63 @@ This project is specifically designed for visually impaired individuals with com
 - "audio on" - Enable audio announcements
 - "audio off" - Disable audio announcements
 
-*Implementation:*
+*Implementation (IMPROVED: 2025-10-21):*
 - Uses Web Speech Recognition API (browser native)
 - Continuous listening mode (always active)
 - Automatic restart on errors (robust)
 - Works even when detection is not running
-- Visual indication not required (audio-first)
+- *NEW:* Visual status indicator (top-right corner):
+  * Green: "Voice: Listening" (actively listening for commands)
+  * Yellow: "Voice: Processing..." (command being processed)
+  * Red: "Voice: Inactive" or "Voice: Error" (not listening)
+  * Gray: "Voice: Not Available" (browser doesn't support)
 - Desktop fallback: Starts voice recognition on first user click if auto-start fails
+- Enhanced error recovery with better restart logic
+- Comprehensive debug logging for troubleshooting
 
-*Voice-Activated Pathfinding (NEW):*
-The "find" command integrates with the A* pathfinding system:
+*Voice-Activated Pathfinding (ENHANCED - Updated 2025-10-21):*
+The "find" command integrates with reactive navigation for real-time obstacle avoidance:
 1. User says "find [object]"
 2. System searches current detections for matching objects
-3. If found: Enables pathfinding mode and sets navigation goal to object center
-4. System calculates safe path avoiding obstacles
-5. Audio announces: "Found [object] [distance] to your [direction]. Setting navigation path."
-6. Path displayed on canvas for sighted users
+3. Object selection: Finds CLOSEST instance by bbox area (larger bbox = closer object)
+4. If found: Enables pathfinding mode and sets navigation goal to object center
+5. Coordinate conversion: Accurately maps object position to screen coordinates using rendered canvas dimensions
+6. System calculates safe direction avoiding obstacles using real depth data (GPU-accelerated)
+7. Audio announces: "Found [object] [distance] to your [direction]. Setting navigation path."
+8. *NEW (2025-10-21):* Continuous navigation guidance loop:
+   - Updates every 500ms with fresh detections
+   - Adapts to moving obstacles in real-time
+   - Automatically stops when destination reached or navigation disabled
+   - Provides dynamic re-routing as environment changes
+9. If camera interface not ready: Audio error "Cannot set navigation goal. Camera interface not ready."
+
+*Navigation Loop Implementation (NEW 2025-10-21):*
+#+begin_src javascript
+// Continuous guidance every 500ms
+navigationInterval = setInterval(() => {
+    if (pathfindingEnabled && navigationGoal) {
+        calculateNavigationPath(canvas, video);
+    } else {
+        stopNavigationLoop();
+    }
+}, 500);
+#+end_src
+
+Previous implementation calculated path ONCE when goal was set. New implementation continuously updates guidance based on current detections, allowing the system to react to moving obstacles and changing environments.
 
 *Object Matching:*
 - Exact match: "chair" matches "chair"
 - Partial match: "chair" matches "dining chair"
 - Case insensitive: "CHAIR" matches "chair"
-- Finds closest instance if multiple objects detected
+- Finds closest instance by bbox area (FIXED 2025-10-19: Previously selected farthest object)
 - Suggests similar objects if not found: "bench not found. Did you mean dining bench?"
+
+*Depth Integration (GPU-Accelerated):*
+- Uses Depth Anything V2 Small on RTX 5060 GPU (72 FPS)
+- Provides real meter-based distances for navigation guidance
+- Confidence validation: Warns user when depth data uncertain (< 30% confidence)
+  - Example: "Walk straight ahead, 5 meters, distance approximate, low sensor confidence"
+- Fallback chain: Motion calibration -> Auto-calibration -> Pinhole model -> Bbox heuristic
 
 *Browser Support:*
 - Chrome/Edge (desktop + mobile): Full support
@@ -1107,6 +1299,23 @@ The "find" command integrates with the A* pathfinding system:
 - ANNOUNCE_DELAY_MS: Milliseconds between announcements (default 3000)
 - ANNOUNCE_PRIORITY_THRESHOLD: Minimum confidence to announce (default 0.7)
 - ANNOUNCE_COLLISION_WARNINGS: Enable/disable collision audio (default true)
+
+*Anti-Spam Rate Limiting (UPDATED 2025-10-18):*
+With optimized 12ms inference times and 150ms detection loop, the system implements multiple layers of rate limiting to prevent audio spam:
+- Global rate limiter: Minimum 800ms between ANY speech (app/static/js/modules/audio.js)
+- Critical cooldown: 3000ms minimum between critical warnings (prevents "danger" spam)
+- Collision intervals: 2000ms minimum for critical, 2500ms for medium, 3000ms for low severity
+- Announcement intervals: 2000ms immediate, 3000ms near, 5000ms medium, 7000ms far objects
+- Queue management: Max queue size of 1, oldest items removed first (FIFO)
+
+*How Rate Limiting Works:*
+1. speak() function checks global lastAnySpeechTime before attempting speech
+2. If <800ms since last speech, message is automatically queued instead of spoken
+3. Critical warnings have additional 3000ms cooldown to prevent same-object spam
+4. Collision alerts have per-severity intervals to prevent announcement floods
+5. All rate-limited messages are queued for sequential playback, not dropped
+
+This multi-layered approach ensures users can actually HEAR and COMPREHEND each warning without being overwhelmed by audio spam, even with very low request-response times (150ms detection loop).
 
 *Environment Variables:*
 All settings can be configured via .env file:
@@ -1624,6 +1833,15 @@ yolo train resume model=runs/detect/train/weights/last.pt
 
 ** Bounding Box Formats
 
+*Coordinate System:*
+YOLO uses standard image coordinate systems:
+- X-axis: 0 (left edge) to width (right edge)
+- Y-axis: 0 (top edge) to height (bottom edge)
+- No coordinate inversion or mirroring is applied
+- Directly maps to video display without transformation
+
+Note: A bug was fixed on 2025-10-31 where code incorrectly inverted X coordinates, causing left/right direction errors.
+
 *** XYXY Format (YOLO Output)
 - [x1, y1, x2, y2] - Top-left and bottom-right corners
 - Used by YOLO detection output
@@ -1643,6 +1861,7 @@ See [[file:zettelkasten/annotation/20251016200000-bounding_box_formats.org][Boun
 
 ** Zettelkasten Documentation
 
+*** Annotation and Training
 All annotation and training documentation is organized in zettelkasten/annotation/:
 
 - [[file:zettelkasten/annotation/20251016201000-annotation_and_training_moc.org][Annotation and Training MOC]] - Central hub (start here)
@@ -1655,6 +1874,22 @@ All annotation and training documentation is organized in zettelkasten/annotatio
 - [[file:zettelkasten/annotation/20251016200600-annotation_quality_guidelines.org][Annotation Quality Guidelines]] - Quality standards
 - [[file:zettelkasten/annotation/20251016200900-annotation_tools_comparison.org][Annotation Tools Comparison]] - Tool selection guide
 - [[file:zettelkasten/annotation/20251016200500-open_images_v7_dataset.org][Open Images v7 Dataset]] - Current model dataset
+
+*** Async Architecture and Concurrency (NEW: 2025-10-19)
+All async architecture documentation is organized in zettelkasten/async/:
+
+- [[file:zettelkasten/async/async-architecture.org][Async Architecture Overview]] - High-level system design (START HERE)
+- [[file:zettelkasten/async/async-backend-threading.org][Async Backend Threading]] - Python threading patterns with depth estimation
+- [[file:zettelkasten/async/async-frontend-patterns.org][Async Frontend Patterns]] - JavaScript async/await with request tracking
+- [[file:zettelkasten/async/async-synchronization.org][Synchronization Mechanisms]] - Locks, queues, state machines, rate limiters
+- [[file:zettelkasten/async/async-audio-system.org][Audio Queue State Machine]] - Priority-based speech synthesis
+
+*Key Topics Covered:*
+- Backend: AsyncDepthWorker daemon threads, DepthMapCache thread-safety, graceful shutdown handlers
+- Frontend: Request ID tracking, AbortController timeout handling, stale response prevention
+- Audio: State machine (IDLE/SPEAKING_*), priority interruption, rate limiting (800ms global, 3000ms critical)
+- Synchronization: threading.Lock(), deque(maxlen), Flask singleton pattern
+- Performance: FP16 GPU optimization (2x speedup), non-blocking depth estimation, 12-20ms total latency
 
 ** Complete Workflow Diagram
 
@@ -1694,6 +1929,1435 @@ Replace yolov8x-oiv7.pt -> Deploy to app/services/yolo_detector.py
     v
 Test on live detection -> Evaluate performance
 #+END_EXAMPLE
+
+* Depth Estimation System (MAJOR UPDATE: 2025-10-19)
+
+** Overview
+
+*PERFORMANCE REVOLUTION (2025-10-19 10:53):* The depth estimation system has been completely redesigned with Depth Anything V2 and async processing, achieving 10-20x performance improvement while maintaining accuracy. The system went from 200-350ms total latency down to 12-20ms, meeting the <15ms target for real-time blind navigation.
+
+Previous iterations:
+- *Original (pre-2025-10-18):* Bbox-based heuristics (~100 pixels = 1 meter) - highly inaccurate
+- *First upgrade (2025-10-18):* MiDaS depth estimation - accurate but slow (200-350ms total)
+- *Current (2025-10-19):* Depth Anything V2 + async processing - fast AND accurate (12-20ms total)
+
+** Problem with Bbox-Based Distance
+
+The original approach in [[file:app/services/pathfinder.py][pathfinder.py:435]] used:
+#+BEGIN_SRC python
+estimated_meters = distance_to_goal / 100  # Assume ~100 pixels = 1 meter (very rough)
+#+END_SRC
+
+*Issues:*
+- Same bbox size can mean different real distances
+- Large person far away vs. small person close up look similar
+- No accounting for camera FOV, focal length, or sensor properties
+- Completely inaccurate for blind navigation safety
+
+** New Async Depth Architecture (2025-10-19)
+
+*** Key Performance Breakthrough
+
+The system now runs depth estimation in a *background thread*, completely eliminating the performance penalty on the main detection pipeline:
+
+- *Main Thread:* YOLO (7ms) + Tracking (10ms) = 17ms total (non-blocking!)
+- *Background Thread:* Depth Anything V2 inference (14ms) runs continuously
+- *Result:* Main pipeline never waits for depth - always uses cached result
+
+*** Five-Tier Distance Estimation Hierarchy
+
+*Priority 1: Motion-Based Calibration (NO HEIGHT ASSUMPTIONS!)*
+   - Uses accelerometer step detection to track user movement
+   - Learns depth scale from actual distance traveled vs. depth changes
+   - Formula: scale = distance_traveled / depth_change
+   - Works for ALL objects regardless of their height
+   - Confidence threshold: >10% (accepts preliminary calibration)
+   - Method: motion_calibrated (icon: person walking emoji)
+   - See Motion-Based Calibration section for details
+
+*Priority 2: Auto-Calibrated Depth (NEW: 2025-10-19!)*
+   - Automatically learns depth scale from pinhole estimates
+   - Uses rolling median of 20 calibration samples
+   - Formula: real_distance = relative_depth * auto_learned_scale
+   - Works for ALL objects once calibrated (even unknown classes!)
+   - Requires 3+ samples to activate (50% confidence)
+   - Method: auto_calibrated
+   - Confidence increases with more samples (90% at 10+ samples)
+
+*Priority 3: Pinhole Camera Model (Fallback):*
+   - Uses known object heights (person ~1.7m, car ~1.5m, etc.)
+   - Formula: distance = (known_height * focal_length) / bbox_pixel_height
+   - Provides absolute metric scale for depth map
+   - Fast mathematical calculation (no ML inference)
+   - Now case-insensitive: "Computer monitor" = "computer monitor"
+   - LIMITATION: Only works for 500+ known object classes
+
+*Priority 4: Bbox Heuristic (NEW: 2025-10-19)*
+   - Estimates distance from bbox size + vertical position
+   - Formula: distance = 5.0 / sqrt(bbox_area_ratio) * position_factor
+   - Objects lower in frame treated as closer (position_factor: 0.7-1.3)
+   - Clamped to 0.5-20m range
+   - Low confidence (0.3) but always available
+   - Method: bbox_heuristic
+
+*Priority 5: Failed (None)*
+   - Distance marked as None with proper validation
+   - Navigation uses pixel-based fallback
+   - Collision detection uses pixel-based prediction
+
+*** Module Structure
+
+**** 1. Camera Calibration (app/utils/camera_calibration.py)
+
+#+BEGIN_SRC python
+class PinholeCameraModel:
+    def __init__(self, focal_length=None, image_width=640, image_height=480):
+        """
+        Pinhole camera model for distance estimation.
+        Auto-estimates focal length from FOV if not provided.
+        """
+        if focal_length is None:
+            # Estimate from typical 60-degree horizontal FOV
+            self.focal_length = self._estimate_focal_length(image_width)
+
+    def estimate_distance(self, bbox, class_name):
+        """
+        Estimate distance using pinhole camera formula.
+        Returns: distance in meters or None
+        """
+        if class_name not in KNOWN_OBJECT_HEIGHTS:
+            return None
+
+        known_height = KNOWN_OBJECT_HEIGHTS[class_name]
+        bbox_height = bbox[3] - bbox[1]
+
+        distance = (known_height * self.focal_length) / bbox_height
+        return distance if 0.1 < distance < 100 else None
+#+END_SRC
+
+*Known Object Heights (app/constants.py):*
+
+As of 2025-10-18 11:15, the database contains 500+ object classes with realistic height estimates:
+
+- *People:* person: 1.7m, man: 1.75m, woman: 1.65m, boy: 1.4m, girl: 1.4m
+- *Vehicles:* car: 1.5m, bus: 3.0m, truck: 2.5m, bicycle: 1.0m, motorcycle: 1.2m
+- *Outdoor:* traffic light: 2.5m, stop sign: 2.0m, fire hydrant: 0.9m, parking meter: 1.5m
+- *Furniture:* bench: 0.5m, chair: 1.0m, bed: 0.6m, couch: 0.9m, table: 0.75m
+- *Kitchen:* refrigerator: 1.8m, oven: 0.9m, microwave: 0.35m, sink: 0.25m
+- *Animals:* dog: 0.6m, cat: 0.3m, horse: 1.6m, elephant: 3.0m, giraffe: 5.0m
+- *Electronics:* laptop: 0.02m, television: 0.7m, mobile phone: 0.15m
+- *Household:* pillow: 0.15m, bottle: 0.25m, book: 0.25m, lamp: 0.5m
+- *And 450+ more objects...*
+
+Total coverage: Musical Instruments (18), Office & Stationery (12), Vehicles (19), Animals (85+), Food (64), Furniture (24), Household Items (20+), Kitchen & Dining (48), Clothing & Accessories (35), Sports & Recreation (30), Electronics (12), Home Appliances (11), Tools & Equipment (17), Buildings & Structures (15), Bathroom & Personal Care (23), Human Body Parts (17), Plants & Nature (14), Outdoor & Urban (10), Toys & Games (8), Weapons (7), Miscellaneous (54), Seafood & Marine Life (15)
+
+**** 2. Depth Estimator (app/services/depth_estimator.py - REWRITTEN 2025-10-19)
+
+#+BEGIN_SRC python
+class DepthEstimator:
+    def __init__(self, model_type='depth-anything-v2-small', force_cpu=False):
+        """
+        Manages depth estimation using Depth Anything V2 with async processing.
+
+        NEW (2025-10-19):
+        - Replaced MiDaS with Depth Anything V2 Small (10x faster)
+        - Async worker thread for non-blocking inference
+        - Auto-calibration system learns depth scale
+        - Thread-safe depth map caching
+        """
+        # Load Depth Anything V2 from HuggingFace (FIXED 2025-10-19 19:15)
+        model_name = "depth-anything/Depth-Anything-V2-Small-hf"
+        self.transform = AutoImageProcessor.from_pretrained(model_name)
+
+        # Use device_map to prevent meta tensor errors
+        if DEPTH_USE_FP16 and self.device == 'cuda':
+            self.model = AutoModelForDepthEstimation.from_pretrained(
+                model_name,
+                device_map={"": self.device},
+                torch_dtype=torch.float16
+            )
+        else:
+            self.model = AutoModelForDepthEstimation.from_pretrained(
+                model_name,
+                device_map={"": self.device} if self.device == 'cuda' else None
+            )
+            if self.device == 'cpu':
+                self.model.to(self.device)
+
+        # Thread-safe caching
+        self.depth_cache = DepthMapCache(maxlen=10)
+
+        # Auto-calibration (learns scale from pinhole)
+        self.auto_calibrator = AutoCalibrator(window_size=20)
+
+        # Start async worker thread
+        if DEPTH_ASYNC_ENABLED:
+            self.async_worker = AsyncDepthWorker(
+                self.model, self.transform, self.device,
+                self.depth_cache, input_size=256  # Reduced from 384
+            )
+            self.async_worker.start()
+
+    def estimate_distance_with_depth(self, image_bgr, bbox, class_name,
+                                     motion_scale=None, motion_confidence=0.0):
+        """
+        Hybrid depth estimation with motion calibration priority.
+
+        NEW (2025-10-18 14:45): Accepts motion calibration data (NO HEIGHT ASSUMPTIONS!)
+
+        Args:
+            motion_scale: Depth scale from user movement (meters per depth unit)
+            motion_confidence: Confidence in motion calibration (0-1)
+
+        Returns:
+            {
+                'distance': float (meters),
+                'confidence': float (0-1),
+                'method': 'motion_calibrated' | 'depth_calibrated' | 'pinhole' | 'failed'
+            }
+        """
+        # Run depth every N frames (cached otherwise)
+        if self.frame_counter % DEPTH_INFERENCE_INTERVAL == 0:
+            self.last_depth_map = self.estimate_depth(image_bgr)
+
+        # Get depth at bbox location
+        if self.last_depth_map is not None:
+            relative_depth = self.get_depth_at_bbox(self.last_depth_map, bbox)
+
+            # Use pinhole for absolute scale
+            pinhole_distance, confidence = self.pinhole_model.estimate_distance_with_confidence(bbox, class_name)
+
+            if pinhole_distance is not None:
+                return {
+                    'distance': pinhole_distance,
+                    'confidence': max(confidence, 0.7),
+                    'method': 'depth_calibrated'
+                }
+
+        # Fallback to pinhole only
+        # ...
+#+END_SRC
+
+**** Graceful Shutdown and GPU Cleanup (ADDED 2025-10-19 15:49)
+
+The async depth worker requires proper cleanup to avoid GPU context corruption. Without cleanup, stopping the server with Ctrl+C would leave CUDA resources locked, requiring manual process termination.
+
+**Cleanup Mechanisms:**
+
+#+BEGIN_SRC python
+# 1. Signal Handlers (run.py)
+def cleanup_and_exit(signum=None, frame=None):
+    """Called on Ctrl+C or kill signal."""
+    from app.services.depth_estimator import _depth_estimator
+    if _depth_estimator is not None:
+        _depth_estimator.cleanup()
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, cleanup_and_exit)   # Ctrl+C
+signal.signal(signal.SIGTERM, cleanup_and_exit)  # kill command
+
+# 2. Explicit Cleanup Method (depth_estimator.py)
+def cleanup(self):
+    """Cleanup async worker and GPU resources."""
+    # Stop worker thread gracefully
+    if self.async_worker is not None:
+        self.async_worker.stop(timeout=3.0)  # Wait up to 3s
+
+    # Clear GPU memory
+    if self.device == 'cuda':
+        torch.cuda.empty_cache()
+
+# 3. Thread Join with Timeout (AsyncDepthWorker.stop())
+def stop(self, timeout=2.0):
+    """Stop thread gracefully."""
+    self.running = False
+    if self.is_alive():
+        self.join(timeout=timeout)  # Wait for thread to finish
+
+# 4. Atexit Handler (backup cleanup)
+def _cleanup_on_exit():
+    """Backup cleanup if signal handler fails."""
+    global _depth_estimator
+    if _depth_estimator is not None:
+        _depth_estimator.cleanup()
+
+atexit.register(_cleanup_on_exit)
+#+END_SRC
+
+**Why Multiple Cleanup Layers?**
+
+1. *Signal handlers:* Primary cleanup on Ctrl+C
+2. *Explicit cleanup():* Guaranteed cleanup call
+3. *Thread join:* Prevents forceful thread termination
+4. *Atexit handler:* Backup if signals fail
+5. *GPU cache clear:* Releases CUDA resources
+
+**Shutdown Sequence:**
+1. User presses Ctrl+C
+2. SIGINT handler calls cleanup_and_exit()
+3. DepthEstimator.cleanup() stops async worker
+4. AsyncDepthWorker.stop() sets running=False and joins thread
+5. Worker thread exits gracefully from run() loop
+6. GPU memory cache cleared with torch.cuda.empty_cache()
+7. Process exits cleanly without GPU errors
+
+**Result:**
+- Server can restart immediately without GPU errors
+- No more "CUDA initialization failure" errors
+- No need for manual taskkill /f /im python
+
+*** Integration into Detection Pipeline
+
+**** Detection Route (app/routes/detection.py)
+
+#+BEGIN_SRC python
+# Initialize depth estimator (singleton) - GPU accelerated (UPDATED 2025-10-19)
+depth_estimator = get_depth_estimator(force_cpu=False)  # RTX 5060 GPU enabled for 72 FPS
+
+# Get motion calibration data (NEW: 2025-10-18)
+motion_calibration = data.get('motion_calibration', {})
+motion_scale = motion_calibration.get('scale')
+motion_confidence = motion_calibration.get('confidence', 0.0)
+
+# For each detection
+for box in boxes:
+    # ... (existing YOLO processing)
+
+    # Estimate real-world distance with motion calibration
+    distance_info = depth_estimator.estimate_distance_with_depth(
+        image_bgr, bbox_coords, normalized_class_name,
+        motion_scale=motion_scale,          # NEW: from user movement
+        motion_confidence=motion_confidence  # NEW: accepts >10%
+    )
+
+    raw_detections.append({
+        'bbox': [x1, y1, width, height],
+        'class_name': normalized_class_name,
+        'confidence': confidence,
+        'distance': distance_info.get('distance'),  # NOW IN METERS!
+        'distance_confidence': distance_info.get('confidence', 0.0),
+        'distance_method': distance_info.get('method', 'failed')  # 'motion_calibrated' prioritized!
+    })
+#+END_SRC
+
+**** Pathfinding Updates (app/services/pathfinder.py)
+
+The pathfinding module now uses real meters instead of pixel-based estimates:
+
+#+BEGIN_SRC python
+# OLD (before 2025-10-18):
+estimated_meters = distance_to_goal / 100  # INACCURATE!
+
+# NEW (after 2025-10-18):
+real_distance = det.get('distance')  # meters from depth estimation
+if real_distance is None:
+    real_distance = distance_pixels / 100  # fallback
+
+# Voice guidance now uses real meters
+if distance_to_goal < 2:
+    distance_text = "almost there"
+elif distance_to_goal < 5:
+    distance_text = f"{int(distance_to_goal)} meters"
+#+END_SRC
+
+** Performance Characteristics (UPDATED: 2025-10-19)
+
+*** Pipeline Latency Breakdown
+
+*BEFORE Optimization (2025-10-18):*
+| Component                  | Time (ms) | Blocking? |
+|----------------------------+-----------+-----------|
+| YOLO detection             | 7-10      | Yes       |
+| MiDaS depth (CPU)          | 150-300   | Yes       |
+| DeepSORT tracking          | 10-15     | Yes       |
+| *TOTAL*                    | *200-350* | *N/A*     |
+
+*AFTER Optimization (2025-10-19):*
+| Component                  | Time (ms) | Blocking? |
+|----------------------------+-----------+-----------|
+| YOLO detection             | 7-10      | Yes       |
+| DeepSORT tracking          | 10-15     | Yes       |
+| Depth Anything V2 (GPU)    | 14        | No (async)|
+| Depth cache lookup         | <1        | Yes       |
+| *TOTAL (main pipeline)*    | *12-20*   | *N/A*     |
+
+*Performance Improvement:* 10-20x faster (200-350ms → 12-20ms)
+
+*** Async Worker Strategy
+
+- Background thread continuously processes depth
+- Main thread never waits for depth inference
+- Depth map updated every 10 frames (DEPTH_INFERENCE_INTERVAL)
+- Thread-safe cache with timestamps (max age: 1 second)
+- Detection always uses latest available depth (1-2 frames old max)
+
+*** Accuracy Comparison
+
+| Method                        | Accuracy        | Speed   | Range   | Availability |
+|-------------------------------+-----------------+---------+---------+--------------|
+| Bbox heuristic (fallback)     | Poor            | Instant | 0.5-20m | Always       |
+| Pinhole model                 | Good            | Instant | 0.5-20m | Known objects|
+| Depth Anything V2 (uncal)     | Relative only   | 14ms    | N/A     | Always       |
+| Auto-calibrated depth (NEW)   | Excellent       | 14ms    | 0.1-50m | After 3+ cal |
+| Motion-calibrated (best)      | Excellent       | 14ms    | 0.1-50m | User walking |
+
+*Auto-Calibration Benefits:*
+- Learns scale from pinhole estimates automatically
+- Works for ALL objects once calibrated (not just known classes!)
+- Rolling median filter for robustness (20 samples)
+- Confidence increases with more samples (50% at 3, 90% at 10+)
+
+** Configuration Constants (app/constants.py - UPDATED 2025-10-19)
+
+#+BEGIN_SRC python
+# Depth estimation (NEW: 2025-10-19)
+DEPTH_INFERENCE_INTERVAL = 10  # Run every N frames (was 3, increased for performance)
+DEPTH_MODEL_TYPE = 'depth-anything-v2-small'  # Model: 'depth-anything-v2-small' or 'midas'
+DEPTH_INPUT_SIZE = 256  # Resize input for faster inference (was 384)
+DEPTH_CACHE_FRAMES = 10  # Cache depth maps (increased from 5)
+DEPTH_FALLBACK_ENABLED = True  # Use pinhole fallback
+DEPTH_ASYNC_ENABLED = True  # Run depth in background thread (NEW!)
+DEPTH_AUTO_CALIBRATION = True  # Auto-calibrate depth scale (NEW!)
+
+# Camera calibration
+DEFAULT_FOCAL_LENGTH = 500  # pixels
+KNOWN_OBJECT_HEIGHTS = {
+    'person': 1.7,  # meters
+    'car': 1.5,
+    'bicycle': 1.0,
+    'desk': 0.75,  # Added for case-sensitivity fix
+    'table': 0.75,
+    'computer monitor': 0.5,
+    # ... (10 total classes)
+}
+#+END_SRC
+
+** Testing and Validation
+
+A comprehensive test suite validates the depth estimation system:
+
+*** Test Script (test_depth.py)
+
+#+BEGIN_SRC bash
+python test_depth.py
+#+END_SRC
+
+*Test Results:*
+#+BEGIN_EXAMPLE
+TESTING PINHOLE CAMERA MODEL
+Camera focal length: 554.3 pixels
+
+Close person (large bbox):
+  Estimated distance: 2.36m
+  Confidence: 0.80
+  Status: PASS (within 1.5m - 3.5m range)
+
+Far person (small bbox):
+  Estimated distance: 11.78m
+  Confidence: 0.42
+  Status: PASS (within 8.0m - 15.0m range)
+
+TESTING MIDAS DEPTH ESTIMATOR
+Model loaded: True
+Device: cpu
+Depth map generated: shape=(480, 640)
+
+TESTING HYBRID ESTIMATION
+Method: depth_calibrated
+Confidence: 0.80
+Distance: 2.36m (accurate!)
+#+END_EXAMPLE
+
+** Impact on Audio Announcements
+
+*Before (bbox-based):*
+- "person close to your left" (vague, often wrong)
+- "car medium distance ahead" (unreliable)
+
+*After (depth-based):*
+- "person 2 meters to your left" (precise!)
+- "car 15 meters ahead" (accurate!)
+- "obstacle 3 meters approaching" (safety-critical accuracy)
+
+** Future Enhancements
+
+1. *GPU Acceleration:* MiDaS on GPU could achieve 5-10ms inference
+2. *Depth Sensor Integration:* Intel RealSense for true depth
+3. *Stereo Vision:* Dual cameras for disparity-based depth
+4. *Temporal Smoothing:* Kalman filtering for depth stability
+5. *Scene-Specific Calibration:* Per-environment focal length optimization
+
+** Dependencies
+
+*New Packages (Python 3.10):*
+- timm: PyTorch image models (for MiDaS backbone)
+- torch: Already included (PyTorch for depth model)
+- torchvision: Already included (transforms)
+
+#+BEGIN_SRC bash
+pip install timm
+#+END_SRC
+
+* Server Dashboard and Monitoring System (NEW: 2025-10-19, RE-ENABLED: 2025-10-31)
+
+** Overview
+
+The Server Dashboard is a comprehensive administrative interface for monitoring system health, performance metrics, and controlling server operations. Accessible at =/admin/dashboard=, it provides real-time visibility into system resources, model status, and application performance.
+
+*Note (2025-10-31):* The dashboard was previously disabled due to request freezing issues but has been re-enabled with performance optimizations including metric caching and increased refresh intervals. See [[file:Changelog.org::*[08:16] - FEATURE: Re-enabled Admin Dashboard with Performance Optimizations][Changelog (2025-10-31 08:16)]] for details.
+
+** Key Features
+
+*** Real-Time Monitoring
+
+**** System Resources
+- *CPU Usage:* Multi-core utilization percentage and frequency monitoring
+- *Memory Usage:* System-wide and process-level RAM consumption in GB
+- *GPU Metrics:* VRAM allocation, utilization percentage, and device information
+- *Disk Usage:* Storage space consumption tracking
+- *Network I/O:* Data transfer statistics (MB sent/received, packet counts)
+
+**** Application Performance
+- *Request Metrics:* Total request count and error tracking
+- *Inference Statistics:* Average inference time (ms) and total inference count
+- *Error Rate:* Percentage calculation of failed requests
+- *Uptime Tracking:* Server uptime in formatted string (days, hours, minutes, seconds)
+
+**** Health Monitoring
+- *Status Indicator:* Overall health status (healthy/warning/error)
+- *Resource Warnings:* Automatic alerts for high resource usage
+  - CPU >90%: High CPU usage warning
+  - Memory >90%: High memory usage warning
+  - GPU >95%: High GPU utilization warning
+- *Model Status:* YOLO model loading verification
+- *Device Status:* Active device (GPU/CPU) monitoring
+
+*** System Control Capabilities
+
+- *Graceful Shutdown:* Properly shutdown server with configurable delay
+- *Tracking Reset:* Clear object tracking statistics
+- *Health Ping:* Test server connectivity with latency measurement
+- *Manual Refresh:* On-demand metrics update
+- *Auto-Refresh:* Automatic 10-second interval updates (increased from 5s for performance)
+
+** Architecture
+
+*** Backend Components
+
+**** ServerMonitor Service (app/services/server_monitor.py)
+
+Singleton service class providing comprehensive system monitoring:
+
+#+BEGIN_SRC python
+# Caching decorator for metric methods (Added 2025-10-31)
+def cache_metric(cache_duration: float = 3.0):
+    """Cache metric results to reduce psutil overhead"""
+    def decorator(func: Callable):
+        cache = {'result': None, 'timestamp': 0}
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            current_time = time.time()
+            if current_time - cache['timestamp'] > cache_duration:
+                cache['result'] = func(*args, **kwargs)
+                cache['timestamp'] = current_time
+            return cache['result']
+        return wrapper
+    return decorator
+
+class ServerMonitor:
+    def __init__(self):
+        self.start_time = time.time()
+        self.request_count = 0
+        self.error_count = 0
+        self.total_inference_time = 0.0
+        self.inference_count = 0
+
+    # Core monitoring methods (cached with @cache_metric decorator)
+    @cache_metric(cache_duration=3.0)
+    def get_cpu_metrics() -> Dict[str, Any]
+    @cache_metric(cache_duration=3.0)
+    def get_memory_metrics() -> Dict[str, Any]
+    @cache_metric(cache_duration=3.0)
+    def get_gpu_metrics() -> Dict[str, Any]
+    @cache_metric(cache_duration=5.0)
+    def get_disk_metrics() -> Dict[str, Any]
+    @cache_metric(cache_duration=3.0)
+    def get_network_metrics() -> Dict[str, Any]
+    @cache_metric(cache_duration=3.0)
+    def get_process_metrics() -> Dict[str, Any]
+    def get_model_status() -> Dict[str, Any]
+    def get_performance_stats() -> Dict[str, Any]
+    def get_health_status() -> Dict[str, Any]
+    @cache_metric(cache_duration=3.0)
+    def get_all_metrics() -> Dict[str, Any]
+
+# Global instance accessor
+def get_monitor() -> ServerMonitor
+#+END_SRC
+
+*Performance Optimization (2025-10-31):* Metric methods are now cached using the =@cache_metric= decorator to prevent redundant system calls. This reduces psutil overhead significantly when multiple requests arrive within the cache window (3-5 seconds). The cache is per-method and time-based, expiring automatically after the configured duration.
+
+***** Key Methods
+
+1. *get_cpu_metrics():* Returns CPU usage percentage, core count, and frequency
+2. *get_memory_metrics():* Returns total, used, and available memory in GB
+3. *get_gpu_metrics():* Returns GPU name, VRAM allocation, and utilization percentage
+4. *get_disk_metrics():* Returns disk space usage and percentage
+5. *get_network_metrics():* Returns network I/O counters (bytes and packets)
+6. *get_process_metrics():* Returns Flask process CPU/memory usage
+7. *get_model_status():* Returns YOLO model loading status and device information
+8. *get_performance_stats():* Returns request/error/inference statistics
+9. *get_health_status():* Returns overall health with automatic warning detection
+10. *get_all_metrics():* Consolidated endpoint returning all metrics in one call
+
+**** Dashboard Routes Blueprint (app/routes/dashboard.py)
+
+RESTful API endpoints for dashboard functionality:
+
+***** Core Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| =/admin/dashboard= | GET | Render dashboard HTML page |
+| =/admin/ping= | GET | Simple health ping with timestamp |
+| =/admin/health= | GET | Detailed health status with warnings |
+| =/admin/metrics= | GET | All system metrics (consolidated) |
+
+***** Granular Metrics Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| =/admin/metrics/cpu= | GET | CPU metrics only |
+| =/admin/metrics/memory= | GET | Memory metrics only |
+| =/admin/metrics/gpu= | GET | GPU metrics only |
+| =/admin/metrics/performance= | GET | Performance statistics only |
+| =/admin/metrics/network= | GET | Network I/O statistics |
+| =/admin/metrics/disk= | GET | Disk usage statistics |
+
+***** Tracking and Model Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| =/admin/tracking/stats= | GET | Object tracking statistics |
+| =/admin/tracking/reset= | POST | Reset tracking statistics |
+| =/admin/model/info= | GET | Model information and class names |
+
+***** System Control Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| =/admin/system/shutdown= | POST | Graceful server shutdown with delay parameter |
+| =/admin/system/restart= | POST | Restart endpoint (requires process manager) |
+| =/admin/logs/recent= | GET | Recent log entries (placeholder) |
+
+*** Frontend Components
+
+**** Dashboard HTML Template (app/templates/dashboard.html)
+
+Modern glassmorphism UI design matching the main application aesthetic:
+
+***** Layout Structure
+- *Header:* Dashboard title, description, and navigation links
+- *Health Status Panel:* Overall status, uptime, and warning alerts
+- *Metrics Grid:* 6-card responsive grid layout
+  1. CPU Usage Card
+  2. Memory Usage Card
+  3. GPU Usage Card
+  4. Disk Usage Card
+  5. Model Status Card
+  6. Performance Metrics Card
+- *Control Panel:* Action buttons for system operations
+- *Auto-Refresh Indicator:* Status message for live updates
+
+***** Visual Features
+- *Color-Coded Progress Bars:*
+  - Green (0-70%): Normal operation
+  - Yellow (70-90%): Moderate usage
+  - Red (90-100%): High usage warning
+- *Status Badges:*
+  - Healthy: Green badge
+  - Warning: Yellow badge
+  - Error: Red badge
+- *Responsive Design:* Mobile-friendly grid layout
+- *Glassmorphism Effects:* Backdrop blur and gradient overlays
+
+**** Dashboard JavaScript Module (app/static/js/modules/dashboard.js)
+
+ES6 module providing client-side dashboard functionality:
+
+#+BEGIN_SRC javascript
+// Core functions
+async function loadMetrics()          // Fetch all metrics from API
+function updateDashboard(data)        // Update all UI components
+function updateHealthStatus(health)   // Update health panel
+function updateCPU(cpu)               // Update CPU metrics
+function updateMemory(memory)         // Update memory metrics
+function updateGPU(gpu)               // Update GPU metrics
+function updateDisk(disk)             // Update disk metrics
+function updateModel(model)           // Update model status
+function updatePerformance(perf)      // Update performance stats
+
+// Control functions
+function pingServer()                 // Test server connectivity
+function resetTracking()              // Reset tracking statistics
+function shutdownServer()             // Graceful server shutdown
+function refreshMetrics()             // Manual metrics refresh
+
+// Auto-refresh management
+function startAutoRefresh()           // Start 5-second interval
+function stopAutoRefresh()            // Stop interval on shutdown
+#+END_SRC
+
+***** Key Features
+- *Auto-Refresh:* setInterval() updates every 5 seconds
+- *Error Handling:* Try-catch blocks with user-friendly error messages
+- *Confirmation Dialogs:* Prevent accidental shutdowns/resets
+- *Visual Feedback:* Loading spinners and status indicators
+- *Latency Measurement:* Performance.now() for ping timing
+- *Progressive Enhancement:* Graceful degradation on fetch failures
+
+** Technical Implementation
+
+*** Dependencies
+
+**** Backend (Python)
+- *psutil:* System and process monitoring
+- *torch.cuda:* GPU metrics collection
+- *Flask:* Blueprint routing and template rendering
+
+**** Frontend (JavaScript)
+- *Fetch API:* RESTful API communication
+- *ES6 Modules:* Code organization and encapsulation
+- *DOM Manipulation:* Dynamic UI updates
+
+*** Design Patterns
+
+1. *Singleton Pattern:* ServerMonitor global instance via get_monitor()
+2. *Blueprint Architecture:* Modular route organization
+3. *Service Layer Separation:* Monitoring logic isolated from routes
+4. *RESTful API:* Standard HTTP methods and status codes
+5. *ES6 Modules:* Frontend code organization and exports
+
+*** Integration Points
+
+**** App Initialization (app/__init__.py)
+- Dashboard blueprint imported and registered
+- Startup logging includes dashboard endpoints
+- CORS configured for dashboard API access
+
+**** File Structure
+#+BEGIN_SRC
+app/
+  __init__.py              [MODIFIED] Blueprint registration
+  routes/
+    dashboard.py           [NEW] Dashboard API routes
+  services/
+    server_monitor.py      [NEW] Monitoring service
+  templates/
+    dashboard.html         [NEW] Dashboard UI
+  static/
+    js/
+      modules/
+        dashboard.js       [NEW] Dashboard logic
+#+END_SRC
+
+** Usage Guide
+
+*** Accessing the Dashboard
+1. Start the Flask server (python run.py)
+2. Navigate to https://192.168.1.14:5000/admin/dashboard
+3. Dashboard loads automatically with initial metrics
+4. Auto-refresh updates every 5 seconds
+
+*** Monitoring System Health
+- *Green Status:* All systems operating normally
+- *Yellow Status:* One or more resources under moderate load
+- *Red Status:* Critical resource exhaustion or model failure
+- *Warnings Panel:* Appears when thresholds exceeded
+
+*** Performing System Operations
+1. *Ping Server:* Click "Ping Server" button to test connectivity
+2. *Reset Tracking:* Click "Reset Tracking" to clear tracking stats
+3. *Refresh Metrics:* Click "Refresh Metrics" for manual update
+4. *Shutdown Server:* Click "Shutdown Server" and confirm
+
+*** API Usage Examples
+
+#+BEGIN_SRC bash
+# Get all metrics
+curl -X GET https://192.168.1.14:5000/admin/metrics
+
+# Health ping
+curl -X GET https://192.168.1.14:5000/admin/ping
+
+# Graceful shutdown with 5-second delay
+curl -X POST https://192.168.1.14:5000/admin/system/shutdown \
+  -H "Content-Type: application/json" \
+  -d '{"delay": 5}'
+
+# Reset tracking statistics
+curl -X POST https://192.168.1.14:5000/admin/tracking/reset
+#+END_SRC
+
+** Security Considerations
+
+*** Current Implementation
+- *No Authentication:* Dashboard accessible without login (suitable for local development)
+- *HTTPS Enabled:* SSL certificates protect data in transit
+- *CORS Configured:* Origin restrictions prevent unauthorized cross-origin access
+
+*** Recommended Production Enhancements
+1. *Authentication:* Add Flask-Login or JWT-based auth
+2. *Authorization:* Role-based access control (RBAC)
+3. *Rate Limiting:* Prevent API abuse
+4. *Audit Logging:* Track shutdown/reset operations
+5. *IP Whitelisting:* Restrict dashboard access to admin IPs
+
+** Performance Characteristics
+
+*** Resource Overhead
+- *CPU Impact:* ~0.5-1% additional CPU usage for metrics collection
+- *Memory Impact:* ~50-100MB for psutil and dashboard components
+- *Network Impact:* ~2-5KB per metrics request
+- *Update Frequency:* 5-second intervals with 200ms response time
+
+*** Scalability
+- *Single Server:* Optimized for monitoring single Flask instance
+- *Multi-Server:* Future enhancement for distributed monitoring
+- *Metrics Storage:* In-memory only (no database persistence)
+
+** Benefits
+
+1. *Operational Visibility:* Real-time insight into system health
+2. *Early Warning System:* Proactive alerts for resource exhaustion
+3. *Safe Shutdown:* Graceful server termination without data loss
+4. *Performance Tracking:* Identify inference bottlenecks
+5. *Professional Interface:* Modern UI matching application design
+6. *Mobile Support:* Responsive design for phone/tablet access
+7. *Zero Configuration:* Works out-of-the-box after installation
+
+** Camera Management and Live Streaming (NEW: 2025-10-20)
+
+*** Overview
+
+The dashboard now includes comprehensive camera management capabilities, allowing admin/helper staff to monitor connected users in real-time and view their live camera feeds.
+
+*** Key Features
+
+**** Camera Registry
+- *Automatic Registration:* Client cameras automatically register on connection
+- *Persistent ID:* Camera ID stored in localStorage for reconnection
+- *Heartbeat Monitoring:* 5-second heartbeat updates with status tracking
+- *Stale Detection:* Automatic offline marking after 30 seconds of inactivity
+
+**** Live Camera Streaming
+- *Dashboard Viewing:* Admin can view live camera feeds from connected users
+- *Privacy Control:* Users can disable streaming via voice command
+- *Frame Upload:* Cameras upload frames every 2 seconds (0.5 FPS)
+- *JPEG Compression:* 70% quality compression to reduce bandwidth
+- *Base64 Encoding:* Secure frame transmission via JSON API
+
+**** Voice Commands for Privacy
+- ="stop streaming"= / ="disable streaming"= / ="privacy mode"=: Disable camera streaming to dashboard
+- ="start streaming"= / ="enable streaming"= / ="allow streaming"=: Re-enable camera streaming
+- *Voice Feedback:* Clear confirmation messages for privacy actions
+
+**** Camera Statistics
+- *Per-Camera Metrics:*
+  - Total detections count
+  - Total frames processed
+  - Current FPS
+  - Detection active status
+  - Battery level (mobile devices)
+  - Geolocation (if enabled)
+  - Dashboard streaming status
+- *Aggregated Statistics:*
+  - Total cameras online/offline
+  - Combined detection counts
+  - Network-wide frame processing
+
+*** Implementation
+
+**** Backend Components
+
+***** CameraRegistry Service (app/services/camera_registry.py)
+
+#+BEGIN_SRC python
+class CameraClient:
+    """Represents a connected camera/client."""
+    def __init__(self, camera_id, client_info):
+        self.camera_id = camera_id
+        self.dashboard_streaming_enabled = True  # Default enabled
+        self.latest_frame = None  # Base64 JPEG
+        self.frame_timestamp = None
+
+    def update_frame(self, frame_data: str)
+    def get_latest_frame(self) -> Optional[str]
+    def update_state(self, state_data: Dict)
+    def to_dict(self) -> Dict
+
+class CameraRegistry:
+    """Registry for managing all connected cameras."""
+    def register_camera(camera_id, client_info) -> CameraClient
+    def unregister_camera(camera_id) -> bool
+    def get_camera(camera_id) -> Optional[CameraClient]
+    def get_online_cameras() -> List[CameraClient]
+    def cleanup_stale_cameras()
+    def get_statistics() -> Dict
+#+END_SRC
+
+***** Camera Routes (app/routes/cameras.py)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| =/admin/cameras/register= | POST | Register new camera client |
+| =/admin/cameras/unregister/<id>= | POST | Unregister camera |
+| =/admin/cameras/heartbeat/<id>= | POST | Update camera heartbeat and state |
+| =/admin/cameras/list= | GET | List all cameras with statistics |
+| =/admin/cameras/<id>= | GET | Get specific camera details |
+| =/admin/cameras/<id>/stream= | GET | Get latest frame from camera |
+| =/admin/cameras/<id>/upload_frame= | POST | Upload frame from camera client |
+| =/admin/cameras/<id>/message= | POST | Send TTS message to camera |
+| =/admin/cameras/broadcast= | POST | Broadcast message to all cameras |
+
+**** Frontend Components
+
+***** Dashboard Camera View Modal
+
+- *Live Stream Display:* Real-time camera feed with FPS indicator
+- *Camera Information:* Name, status, FPS, streaming enabled status
+- *Status Indicators:*
+  - Live (green): Streaming active with current FPS
+  - Streaming Disabled (red): User privacy mode active
+  - No Frame Available (yellow): Waiting for frames
+  - Connection Error (red): Network/server error
+
+***** Camera Card UI
+
+Each camera displays:
+- Camera name and online/offline status indicator
+- Detection active/inactive status
+- Current FPS and total detections
+- Dashboard streaming enabled/disabled status
+- Battery level and charging status (mobile)
+- Geolocation coordinates (if available)
+- Action buttons: View, Message
+
+***** Client-Side Frame Upload (app/static/js/modules/camera.js)
+
+#+BEGIN_SRC javascript
+// Frame upload management
+let dashboardStreamingEnabled = true;
+let frameUploadInterval = null;
+
+async function uploadFrame() {
+    // Capture current video frame
+    const tempCanvas = document.createElement('canvas');
+    const tempCtx = tempCanvas.getContext('2d');
+    tempCtx.drawImage(video, 0, 0, width, height);
+
+    // Convert to base64 JPEG (70% quality)
+    const frameData = tempCanvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+
+    // Upload to server
+    await fetch(`/admin/cameras/${cameraId}/upload_frame`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ frame: frameData })
+    });
+}
+
+function startFrameUpload() {
+    // Upload every 2 seconds (0.5 FPS)
+    frameUploadInterval = setInterval(uploadFrame, 2000);
+}
+
+export function toggleDashboardStreaming(enabled) {
+    dashboardStreamingEnabled = enabled;
+    localStorage.setItem('dashboardStreamingEnabled', enabled);
+
+    if (enabled) {
+        startFrameUpload();
+    } else {
+        stopFrameUpload();
+    }
+}
+#+END_SRC
+
+*** Privacy and Security
+
+**** User Control
+- *Default Enabled:* Streaming enabled by default for helper support
+- *Voice Control:* Hands-free privacy mode activation
+- *Persistent Preference:* Settings saved to localStorage
+- *Clear Feedback:* Audio confirmation of privacy mode changes
+- *Visual Indicators:* Dashboard shows streaming status on all cameras
+
+**** Data Protection
+- *No Storage:* Frames stored in memory only, not persisted to disk
+- *2-Second Expiry:* Old frames automatically discarded
+- *Compression:* 70% JPEG quality reduces data exposure
+- *Local Control:* User controls streaming, not server
+- *Transparent Status:* Streaming status visible to both user and admin
+
+**** Network Security
+- *HTTPS Only:* All frame uploads encrypted in transit
+- *Base64 Encoding:* Binary-safe JSON transmission
+- *Rate Limiting:* 0.5 FPS upload rate prevents bandwidth abuse
+- *Client Authentication:* Camera ID verification for uploads
+
+*** Performance Characteristics
+
+**** Bandwidth Usage
+- *Per Camera:* ~20-40 KB per frame at 70% JPEG quality
+- *Upload Rate:* 0.5 FPS = ~10-20 KB/s per camera
+- *10 Cameras:* ~100-200 KB/s total dashboard streaming
+- *Negligible Impact:* <2% of typical 10 Mbps connection
+
+**** Server Resource Impact
+- *Memory:* ~50-100 KB per camera (single frame storage)
+- *CPU:* <1% for base64 encoding/decoding
+- *Network I/O:* Handled asynchronously, non-blocking
+
+**** Client Resource Impact
+- *Canvas Operations:* <5ms per frame capture
+- *Base64 Encoding:* <10ms per frame
+- *Upload Time:* 50-200ms depending on network
+- *Total Overhead:* <1% CPU, ~1-2 MB/min bandwidth
+
+*** Use Cases
+
+**** Helper/Staff Monitoring
+1. *Safety Supervision:* Monitor users navigating hazardous areas
+2. *Remote Assistance:* Provide guidance based on what user sees
+3. *Training Observation:* Watch users learning the system
+4. *Incident Response:* Quickly assess situation during alerts
+
+**** Privacy-Conscious Scenarios
+1. *Private Spaces:* User says "privacy mode" in bathroom/bedroom
+2. *Sensitive Locations:* Disable streaming in confidential areas
+3. *Personal Preference:* Users who prefer complete privacy
+4. *On-Demand Assistance:* Enable only when requesting help
+
+*** Future Enhancements
+
+**** Short-Term
+1. *Two-Way Audio:* Voice communication between user and helper
+2. *Screen Annotation:* Helper can mark areas on user's view
+3. *Recording:* Optional session recording for training
+4. *Multiple Viewers:* Multiple helpers view same camera
+
+**** Long-Term
+1. *WebRTC Streaming:* Replace polling with real-time peer-to-peer
+2. *Adaptive Quality:* Adjust frame rate/quality based on bandwidth
+3. *Motion Detection:* Only upload frames when significant change detected
+4. *Emergency Override:* Helper can request stream during emergencies
+
+** Future Enhancements
+
+*** Short-Term (Planned)
+1. *Log File Viewing:* Real-time log streaming to dashboard
+2. *Historical Graphs:* Time-series charts for metrics trends
+3. *Custom Alerts:* Configurable threshold notifications
+4. *Export Functionality:* Download metrics as CSV/JSON
+
+*** Long-Term (Wishlist)
+1. *Email Alerts:* Automated notifications for critical events
+2. *Multi-Server Support:* Centralized monitoring dashboard
+3. *Database Persistence:* Store metrics history for analysis
+4. *Prometheus Integration:* Export metrics in Prometheus format
+5. *Grafana Dashboards:* Pre-built visualization templates
+6. *Mobile App:* Native iOS/Android monitoring apps
+
+** Related Documentation
+
+- See [[file:Changelog.org::*18:45:00 - NEW FEATURE: Server Dashboard for System Monitoring and Control][Changelog.org (2025-10-19 18:45:00)]] for implementation details
+- See [[file:docs/DEVELOPER_HANDBOOK.org][DEVELOPER_HANDBOOK.org]] for API reference
+- See [[file:app/routes/dashboard.py][dashboard.py]] for route implementations
+- See [[file:app/services/server_monitor.py][server_monitor.py]] for monitoring logic
+
+* Real-Time Voice Communication System (NEW: 2025-10-22)
+
+** Overview
+
+The Real-Time Voice Communication System enables bi-directional audio communication between the dashboard operator (admin/helper) and the user (visually impaired person navigating). This provides a "phone call-like" experience where the operator can provide real-time verbal guidance and instructions to assist with navigation.
+
+** Architecture
+
+*** Communication Flow
+
+#+BEGIN_SRC
+
+    Dashboard Operator                    Server                        User Device
+    (Admin Interface)                    (Flask)                      (Navigation Client)
+
+    +------------------+          +------------------+          +------------------+
+    | Microphone       |          | Camera Registry  |          | Speaker/Headphones|
+    | Capture          |          | Audio Queue      |          | Playback         |
+    +------------------+          +------------------+          +------------------+
+           |                              |                             |
+           | 1. Request Mic Permission    |                             |
+           |----------------------------->|                             |
+           |                              |                             |
+           | 2. Start Voice Session       |                             |
+           |----------------------------->|                             |
+           |                              | 3. Initialize Audio Queue   |
+           |                              |                             |
+           | 4. Capture 200ms Audio Chunk |                             |
+           | (WebM/Opus)                  |                             |
+           |                              |                             |
+           | 5. Send Chunk (Base64)       |                             |
+           |----------------------------->| 6. Queue Chunk              |
+           |                              |                             |
+           |                              |      7. Poll for Chunks     |
+           |                              |<----------------------------|
+           |                              |                             |
+           |                              | 8. Return Audio Chunks      |
+           |                              |---------------------------->|
+           |                              |                             |
+           |                              |      9. Decode & Play       |
+           |                              |         (Web Audio API)     |
+           |                              |                             |
+           | 10. Stop Voice Session       |                             |
+           |----------------------------->| 11. Clear Queue             |
+           |                              |                             |
+
+#+END_SRC
+
+*** Key Components
+
+**** Dashboard Side (Microphone Capture)
+- *Module:* =app/static/js/modules/voiceComm.js=
+- *Class:* =VoiceComm=
+- *Technology:* MediaRecorder API with WebM/Opus codec
+- *Chunk Size:* 200ms (balance between latency and overhead)
+- *Encoding:* Base64 for JSON transport
+
+**** Server Side (Audio Routing)
+- *Camera Registry:* =app/services/camera_registry.py=
+  - Audio queue per camera client
+  - Voice session state management
+  - Sequence-based chunk ordering
+- *Routes:* =app/routes/cameras.py= and =app/routes/client.py=
+  - Voice session management (start/stop)
+  - Chunk upload (POST)
+  - Chunk polling (GET)
+  - Broadcast support (all cameras)
+
+**** Client Side (Audio Playback)
+- *Module:* =app/static/js/modules/voiceReceiver.js=
+- *Class:* =VoiceReceiver=
+- *Technology:* Web Audio API
+- *Polling Interval:* 100ms (low latency)
+- *Priority:* Pauses TTS when voice message arrives
+
+** Features
+
+*** Individual Camera Voice Call
+- Dashboard operator can call specific camera/user
+- One-to-one voice communication
+- Visual indicator on both sides
+- "End Call" button to stop
+
+*** Broadcast Voice to All Cameras
+- Operator can speak to all connected users simultaneously
+- Useful for emergency announcements or group guidance
+- Recipients counter shows how many users received message
+
+*** Audio Quality Settings
+- *Format:* WebM with Opus codec (efficient compression)
+- *Sample Rate:* 48kHz
+- *Bitrate:* Optimized for voice (24kbps)
+- *Noise Suppression:* Enabled
+- *Echo Cancellation:* Enabled
+- *Auto Gain Control:* Enabled
+
+*** User Experience
+
+**** Dashboard Operator
+1. Click "Voice Call" button on camera card
+2. Browser requests microphone permission (first time)
+3. Button changes to "End Call" with red color
+4. Operator speaks into microphone
+5. Audio chunks sent automatically every 200ms
+6. Click "End Call" to stop
+
+**** User (Navigation Client)
+1. Automatic session registration on page load
+2. Voice receiver starts polling automatically
+3. Visual indicator appears when operator speaks: "Dashboard operator is speaking..."
+4. Voice audio plays through device speakers/headphones
+5. TTS announcements are paused during voice messages
+6. Indicator disappears when operator stops speaking
+
+** Technical Implementation
+
+*** Backend (Python)
+
+**** Camera Registry Extensions
+#+BEGIN_SRC python
+class CameraClient:
+    # Voice communication state
+    audio_chunks_queue = []              # Queue of audio chunks
+    voice_session_active = False         # Session state
+    voice_session_start = None           # Session start time
+    last_audio_chunk_time = None         # Last chunk timestamp
+
+    def start_voice_session()            # Initialize session
+    def stop_voice_session()             # End session
+    def queue_audio_chunk(data, seq)     # Add chunk to queue
+    def get_audio_chunks(last_seq)       # Get new chunks
+    def clear_audio_queue()              # Clear all chunks
+    def is_voice_session_stale()         # Check timeout
+#+END_SRC
+
+**** API Endpoints
+
+***** Camera-Specific Voice
+- =POST /admin/cameras/<camera_id>/voice/start= - Start voice session
+- =POST /admin/cameras/<camera_id>/voice/chunk= - Upload audio chunk
+- =POST /admin/cameras/<camera_id>/voice/stop= - Stop voice session
+
+***** Broadcast Voice
+- =POST /admin/cameras/broadcast/voice/start= - Start broadcast
+- =POST /admin/cameras/broadcast/voice/chunk= - Broadcast chunk
+- =POST /admin/cameras/broadcast/voice/stop= - Stop broadcast
+
+***** Client Voice Polling
+- =GET /client/voice/chunks?last_sequence=N= - Poll for new chunks
+- =POST /client/register_session= - Register camera session
+
+*** Frontend (JavaScript)
+
+**** Dashboard Microphone Capture (voiceComm.js)
+#+BEGIN_SRC javascript
+class VoiceComm {
+    async startVoiceSession(cameraId, cameraName)
+    async stopVoiceSession()
+    async sendAudioChunk(audioBlob)
+    blobToBase64(blob)
+    getSupportedMimeType()
+    cleanup()
+}
+#+END_SRC
+
+**** Client Audio Playback (voiceReceiver.js)
+#+BEGIN_SRC javascript
+class VoiceReceiver {
+    async start()                       // Start polling
+    stop()                              // Stop polling
+    async pollVoiceChunks()             // Poll server (100ms)
+    async processAudioQueue()           // Play chunks
+    async playAudioChunk(base64Audio)   // Web Audio API playback
+    showVoiceIndicator()                // Show UI notification
+    hideVoiceIndicator()                // Hide UI notification
+}
+#+END_SRC
+
+** Performance Characteristics
+
+*** Latency Breakdown
+- *Audio Capture:* ~50-100ms (MediaRecorder chunk creation)
+- *Upload to Server:* ~50-100ms (network + processing)
+- *Client Polling:* ~0-100ms (polling interval)
+- *Decode & Playback:* ~20-50ms (Web Audio API)
+- *Total End-to-End:* ~200-350ms (acceptable for navigation guidance)
+
+*** Resource Usage
+- *Dashboard:* Minimal CPU (MediaRecorder hardware acceleration)
+- *Server:* <1MB memory per active voice session (audio chunks)
+- *Client:* Minimal CPU (Web Audio API hardware decoding)
+- *Network:* ~10-15KB/s per active voice stream (Opus compression)
+
+*** Scalability
+- *Concurrent Sessions:* Limited by server memory (each camera has audio queue)
+- *Max Queue Size:* 50 chunks (~10 seconds) per camera
+- *Auto Cleanup:* Stale chunks removed after 5 seconds
+- *Session Timeout:* 10 seconds of inactivity
+
+** Browser Compatibility
+
+*** Supported Browsers
+- *Chrome/Edge:* Full support (MediaRecorder + Web Audio API)
+- *Firefox:* Full support
+- *Safari:* Partial (requires user gesture for AudioContext)
+- *Mobile Chrome:* Full support
+- *Mobile Safari (iOS):* Partial (audio context restrictions)
+
+*** Required Permissions
+- *Dashboard:* Microphone access (requested on first use)
+- *Client:* None (only playback, no capture needed)
+
+** Privacy and Security
+
+*** Privacy Considerations
+- *User Consent:* User must enable dashboard streaming to receive voice
+- *No Recording:* Audio chunks are temporary (not stored permanently)
+- *Session-Based:* Each session is independent and ephemeral
+- *Auto Cleanup:* Old chunks automatically discarded
+
+*** Security Measures
+- *Session Authentication:* Camera ID verified before voice delivery
+- *HTTPS Required:* Microphone access requires secure context
+- *Rate Limiting:* Audio chunk size and frequency limits prevent abuse
+- *Queue Limits:* Prevent memory exhaustion attacks
+
+** UI/UX Design
+
+*** Dashboard Visual Indicators
+- *Voice Call Button:* Blue gradient (inactive), Red gradient (active)
+- *Button Text:* "Voice Call" changes to "End Call"
+- *Camera Card Badge:* Shows "Voice: Active" during session
+- *Broadcast Button:* "Broadcast Voice" / "Stop Broadcast"
+
+*** Client Visual Indicators
+- *Voice Indicator Banner:* Appears at top of screen
+- *Microphone Icon:* Animated pulsing effect
+- *Text:* "Dashboard operator is speaking..."
+- *Auto-Hide:* Disappears when voice session ends
+- *Z-Index:* High priority (overlays other content)
+
+** Integration with Existing Systems
+
+*** TTS Audio System
+- *Priority:* Voice messages have higher priority than TTS
+- *Behavior:* TTS cancelled when voice message arrives
+- *Resume:* TTS can resume after voice message ends
+- *Queue Management:* Independent from TTS queue
+
+*** Camera Registry
+- *Registration:* Automatic on client page load
+- *Heartbeat:* Session kept alive via polling
+- *Cleanup:* Stale sessions removed (30s timeout)
+- *Multiple Cameras:* Each camera has independent audio queue
+
+*** Dashboard Camera Management
+- *Camera Cards:* Voice Call button added to each card
+- *Camera View Modal:* Voice call available in detailed view
+- *Broadcast Panel:* Centralized broadcast control
+- *Statistics:* Voice session state visible in camera info
+
+** Testing and Debugging
+
+*** Dashboard Testing
+1. Open dashboard: =/admin/dashboard=
+2. Switch to "Camera Management" view
+3. Ensure camera (user device) is online
+4. Click "Voice Call" on camera card
+5. Grant microphone permission
+6. Speak into microphone
+7. Check browser console for chunk upload logs
+
+*** Client Testing
+1. Open main app: =/=
+2. Check browser console for session registration
+3. Look for "Voice receiver active" message
+4. Operator initiates voice call from dashboard
+5. Voice indicator should appear
+6. Audio should play through speakers
+7. Indicator should disappear when call ends
+
+*** Console Logs
+- Dashboard: "Audio chunk N sent successfully"
+- Server: "Voice session started for camera X"
+- Client: "Received N new audio chunks"
+- Client: "Voice indicator shown/hidden"
+
+** Troubleshooting
+
+*** Diagnostic Tools (NEW 2025-10-29)
+
+**** Voice Test Page
+- *URL:* =/admin/voice-test=
+- *Purpose:* Comprehensive voice call system diagnostics
+- *Features:*
+  - System requirements checker (HTTPS, APIs, codecs)
+  - Session registration tester
+  - Voice receiver/transmitter testers
+  - Real-time test log with error tracking
+  - Chunk send/receive counters
+  - Network latency monitoring
+
+**** Complete Troubleshooting Guide
+- *File:* [[file:VOICE_CALL_TROUBLESHOOTING.md][VOICE_CALL_TROUBLESHOOTING.md]]
+- *Coverage:*
+  - 5 common issue categories with detailed solutions
+  - Browser compatibility (Chrome, Firefox, Safari)
+  - Network optimization guide
+  - HTTPS/SSL setup instructions
+  - Security considerations
+  - Performance tuning
+  - 3 testing procedures (quick, full, network)
+
+*** Common Issues (Quick Reference)
+
+**** Microphone Permission Denied
+- *Symptom:* Voice call fails to start
+- *Solution:* Check browser microphone permissions
+- *Chrome:* Settings > Privacy > Site Settings > Microphone
+- *Firefox:* Permissions icon in address bar
+- *HTTPS Required:* Browsers block microphone on HTTP sites
+- *Detailed Fix:* See VOICE_CALL_TROUBLESHOOTING.md Issue 1
+
+**** No Audio Playback on Client
+- *Check:* Browser console for errors
+- *Issue 1:* AudioContext requires user gesture (click page first)
+- *Issue 2:* Device volume muted or very low
+- *Issue 3:* Client not registered (check session_id)
+- *Detailed Fix:* See VOICE_CALL_TROUBLESHOOTING.md Issue 2
+
+**** High Latency (>1 second)
+- *Cause:* Network congestion or slow server
+- *Check:* Ping server, check network speed
+- *Mitigation:* Reduce chunk size (advanced setting)
+- *Optimal Settings:*
+  - Fast LAN: 100ms poll / 200ms chunks
+  - WiFi: 150ms poll / 300ms chunks
+  - Slow network: 200ms poll / 400ms chunks
+- *Detailed Fix:* See VOICE_CALL_TROUBLESHOOTING.md Issue 3
+
+**** Voice Indicator Doesn't Appear
+- *Check:* Element exists: =document.getElementById('voiceIndicator')=
+- *CSS Issue:* Check z-index and display properties
+- *JS Error:* Check console for JavaScript errors
+- *Detailed Fix:* See VOICE_CALL_TROUBLESHOOTING.md Issue 2
+
+** Future Enhancements
+
+*** Two-Way Communication
+- Add microphone capture on client side
+- Allow user to speak back to operator
+- Full duplex audio communication
+
+*** WebRTC Implementation
+- Replace HTTP polling with WebRTC for lower latency
+- Direct peer-to-peer connection
+- Sub-100ms latency possible
+
+*** Call Recording
+- Optional recording of voice sessions
+- Playback for training/review
+- Privacy opt-in required
+
+*** Multiple Operators
+- Conference call mode (multiple operators)
+- Operator presence indicators
+- Audio mixing for multiple speakers
+
+*** Advanced Audio Features
+- Voice effects (clarity enhancement)
+- Noise reduction (advanced)
+- Automatic volume normalization
+- Spatial audio (directional hints)
+
+** Related Documentation
+
+- See [[file:Changelog.org][Changelog.org (2025-10-22)]] for implementation details
+- See [[file:app/routes/cameras.py][cameras.py]] for voice API routes
+- See [[file:app/routes/client.py][client.py]] for client polling endpoints
+- See [[file:app/services/camera_registry.py][camera_registry.py]] for audio queue implementation
+- See [[file:app/static/js/modules/voiceComm.js][voiceComm.js]] for dashboard microphone capture
+- See [[file:app/static/js/modules/voiceReceiver.js][voiceReceiver.js]] for client audio playback
 
 * Limitations and Future Work
 

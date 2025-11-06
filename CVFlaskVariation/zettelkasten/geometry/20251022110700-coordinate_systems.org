@@ -1,0 +1,525 @@
+#+TITLE: Coordinate Systems and Geometric Transformations
+#+DATE: [2025-10-22]
+#+ROAM_TAGS: geometry coordinates transformations bounding-boxes image-processing
+#+RELATED: [[file:../codebase/20251016200700-bbox_coordinate_conversions.org][Bbox Coordinate Conversions]]
+#+RELATED: [[file:../detection/20251022110400-signal_filtering.org][Signal Filtering]]
+
+* Overview
+
+Computer vision systems use multiple coordinate systems. Understanding transformations between them is essential for object detection, tracking, and spatial reasoning.
+
+* Image Coordinate Systems
+
+** Pixel Coordinates
+
+Standard image coordinate system:
+#+BEGIN_EXAMPLE
+(0, 0) -----------> X (width)
+  |
+  |
+  |
+  v
+  Y (height)
+#+END_EXAMPLE
+
+*Origin:* Top-left corner
+*X-axis:* Right (increases left to right)
+*Y-axis:* Down (increases top to bottom)
+
+*Example:* 640x480 image
+- Top-left: (0, 0)
+- Top-right: (639, 0)
+- Bottom-left: (0, 479)
+- Bottom-right: (639, 479)
+
+** Normalized Coordinates
+
+Coordinates scaled to [0, 1] range:
+#+BEGIN_SRC python
+normalized_x = pixel_x / image_width
+normalized_y = pixel_y / image_height
+#+END_SRC
+
+*Benefits:*
+- Resolution-independent
+- Easy to scale between different image sizes
+- Common in neural networks (consistent input range)
+
+*Example:* Point (320, 240) in 640x480 image
+- Normalized: (0.5, 0.5) - center of image
+
+** Cartesian Coordinates (Mathematical)
+
+Traditional math coordinate system:
+#+BEGIN_EXAMPLE
+  Y (height)
+  ^
+  |
+  |
+  |
+(0, 0) -----------> X (width)
+#+END_EXAMPLE
+
+*Origin:* Bottom-left corner (NOT top-left!)
+*Y-axis:* Up (opposite of image coordinates)
+
+*Conversion from image coordinates:*
+#+BEGIN_SRC python
+cartesian_y = image_height - pixel_y
+#+END_SRC
+
+* Bounding Box Formats
+
+** XYXY Format (Corner Coordinates)
+
+Two corners: top-left and bottom-right
+#+BEGIN_EXAMPLE
+(x1, y1) ----+
+   |         |
+   |         |
+   +---- (x2, y2)
+#+END_EXAMPLE
+
+*Format:* [x1, y1, x2, y2]
+- (x1, y1): Top-left corner
+- (x2, y2): Bottom-right corner
+
+*Properties:*
+- Width = x2 - x1
+- Height = y2 - y1
+- Area = (x2 - x1) * (y2 - y1)
+
+*Used by:* YOLO output, many detection frameworks
+
+** LTWH Format (Left-Top-Width-Height)
+
+Top-left corner + dimensions
+#+BEGIN_EXAMPLE
+(left, top) ----+
+   |            | height
+   |            |
+   +------------+
+      width
+#+END_EXAMPLE
+
+*Format:* [left, top, width, height]
+- (left, top): Top-left corner position
+- width, height: Box dimensions
+
+*Conversion from XYXY:*
+#+BEGIN_SRC python
+left = x1
+top = y1
+width = x2 - x1
+height = y2 - y1
+#+END_SRC
+
+*Used by:* DeepSORT tracker, COCO dataset annotations
+
+** XYWH Format (Center-Width-Height)
+
+Center point + dimensions
+#+BEGIN_EXAMPLE
+    width
+   +-----+
+   |  .  | height  (dot = center)
+   +-----+
+#+END_EXAMPLE
+
+*Format:* [center_x, center_y, width, height]
+- (center_x, center_y): Box center
+- width, height: Box dimensions
+
+*Conversion from XYXY:*
+#+BEGIN_SRC python
+center_x = (x1 + x2) / 2
+center_y = (y1 + y2) / 2
+width = x2 - x1
+height = y2 - y1
+#+END_SRC
+
+*Used by:* YOLO training (ground truth labels), anchor boxes
+
+** YOLO Label Format (Normalized XYWH)
+
+XYWH with all coordinates normalized to [0, 1]:
+#+BEGIN_EXAMPLE
+<class_id> <center_x> <center_y> <width> <height>
+#+END_EXAMPLE
+
+*Example:*
+#+BEGIN_EXAMPLE
+0 0.5 0.5 0.3 0.4
+# Class 0 (person)
+# Center at 50%, 50% (image center)
+# Width 30% of image width
+# Height 40% of image height
+#+END_EXAMPLE
+
+*Conversion to pixel coordinates:*
+#+BEGIN_SRC python
+pixel_center_x = norm_center_x * image_width
+pixel_center_y = norm_center_y * image_height
+pixel_width = norm_width * image_width
+pixel_height = norm_height * image_height
+
+# Convert to XYXY
+x1 = pixel_center_x - pixel_width / 2
+y1 = pixel_center_y - pixel_height / 2
+x2 = pixel_center_x + pixel_width / 2
+y2 = pixel_center_y + pixel_height / 2
+#+END_SRC
+
+*Used by:* YOLO dataset annotations
+
+* Conversion Functions
+
+** XYXY to LTWH
+
+#+BEGIN_SRC python
+def xyxy_to_ltwh(bbox):
+    """Convert [x1, y1, x2, y2] to [left, top, width, height]."""
+    x1, y1, x2, y2 = bbox
+    return [x1, y1, x2 - x1, y2 - y1]
+#+END_SRC
+
+** LTWH to XYXY
+
+#+BEGIN_SRC python
+def ltwh_to_xyxy(bbox):
+    """Convert [left, top, width, height] to [x1, y1, x2, y2]."""
+    left, top, width, height = bbox
+    return [left, top, left + width, top + height]
+#+END_SRC
+
+** XYXY to XYWH
+
+#+BEGIN_SRC python
+def xyxy_to_xywh(bbox):
+    """Convert [x1, y1, x2, y2] to [center_x, center_y, width, height]."""
+    x1, y1, x2, y2 = bbox
+    return [
+        (x1 + x2) / 2,
+        (y1 + y2) / 2,
+        x2 - x1,
+        y2 - y1
+    ]
+#+END_SRC
+
+** Generic Converter (app/utils/geometry.py)
+
+#+BEGIN_SRC python
+def convert_bbox_format(bbox, from_format='xyxy', to_format='ltwh'):
+    """Convert bbox between formats."""
+    if from_format == to_format:
+        return bbox
+
+    if from_format == 'xyxy' and to_format == 'ltwh':
+        x1, y1, x2, y2 = bbox
+        return [x1, y1, x2 - x1, y2 - y1]
+
+    elif from_format == 'ltwh' and to_format == 'xyxy':
+        x, y, w, h = bbox
+        return [x, y, x + w, y + h]
+
+    else:
+        raise ValueError(f"Unsupported conversion: {from_format} -> {to_format}")
+#+END_SRC
+
+* Geometric Calculations
+
+** Bounding Box Center
+
+#+BEGIN_SRC python
+def calculate_box_center(bbox):
+    """Calculate center point of bounding box."""
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2, (y1 + y2) / 2)
+#+END_SRC
+
+*Use Cases:*
+- Object tracking (track center point)
+- Distance calculation (center-to-center)
+- Collision detection
+
+** Bounding Box Area
+
+#+BEGIN_SRC python
+def calculate_box_area(bbox):
+    """Calculate area of bounding box."""
+    x1, y1, x2, y2 = bbox
+    return (x2 - x1) * (y2 - y1)
+#+END_SRC
+
+*Use Cases:*
+- Size-based filtering (remove tiny boxes)
+- IoU calculation
+- Distance estimation (larger box = closer)
+
+** Euclidean Distance
+
+#+BEGIN_SRC python
+def calculate_distance(point1, point2):
+    """Calculate Euclidean distance between two points."""
+    from scipy.spatial.distance import euclidean
+    return euclidean(point1, point2)
+
+# Or manually:
+def euclidean_distance(p1, p2):
+    return math.sqrt((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)
+#+END_SRC
+
+*Use Cases:*
+- Track object movement (distance between consecutive centers)
+- Nearest neighbor search
+- Velocity calculation
+
+** Intersection over Union (IoU)
+
+#+BEGIN_SRC python
+def calculate_iou(box1, box2):
+    """Calculate IoU between two bounding boxes (XYXY format)."""
+    x1_min, y1_min, x1_max, y1_max = box1
+    x2_min, y2_min, x2_max, y2_max = box2
+
+    # Intersection rectangle
+    inter_x_min = max(x1_min, x2_min)
+    inter_y_min = max(y1_min, y2_min)
+    inter_x_max = min(x1_max, x2_max)
+    inter_y_max = min(y1_max, y2_max)
+
+    # No intersection
+    if inter_x_max < inter_x_min or inter_y_max < inter_y_min:
+        return 0.0
+
+    # Intersection area
+    intersection = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+
+    # Union area
+    area1 = (x1_max - x1_min) * (y1_max - y1_min)
+    area2 = (x2_max - x2_min) * (y2_max - y2_min)
+    union = area1 + area2 - intersection
+
+    return intersection / union if union > 0 else 0.0
+#+END_SRC
+
+*Use Cases:*
+- Non-maximum suppression
+- Deduplication
+- Tracking (data association)
+- Evaluation metric (mAP calculation)
+
+* 3D Coordinate Systems
+
+** Camera Coordinate System
+
+Origin at camera optical center:
+#+BEGIN_EXAMPLE
+     Z (forward, depth)
+    /
+   /
+  +------> X (right)
+  |
+  |
+  v Y (down)
+#+END_EXAMPLE
+
+*Right-handed coordinate system:*
+- X: Right
+- Y: Down
+- Z: Forward (into the scene)
+
+** World Coordinate System
+
+Arbitrary reference frame in 3D space:
+#+BEGIN_EXAMPLE
+  Z (up)
+  ^
+  |
+  |
+  +------> X (east)
+ /
+/
+Y (north)
+#+END_EXAMPLE
+
+*Transformation:* Camera -> World requires:
+1. Rotation matrix (camera orientation)
+2. Translation vector (camera position)
+
+** Depth to 3D Projection
+
+Convert pixel + depth to 3D point:
+#+BEGIN_SRC python
+def pixel_to_3d(pixel_x, pixel_y, depth, camera_matrix):
+    """
+    Project pixel to 3D using pinhole camera model.
+
+    Args:
+        pixel_x, pixel_y: Pixel coordinates
+        depth: Distance from camera (meters)
+        camera_matrix: 3x3 intrinsic matrix [[fx, 0, cx],
+                                             [0, fy, cy],
+                                             [0, 0, 1]]
+    Returns:
+        (X, Y, Z) in camera coordinates (meters)
+    """
+    fx = camera_matrix[0][0]
+    fy = camera_matrix[1][1]
+    cx = camera_matrix[0][2]
+    cy = camera_matrix[1][2]
+
+    X = (pixel_x - cx) * depth / fx
+    Y = (pixel_y - cy) * depth / fy
+    Z = depth
+
+    return (X, Y, Z)
+#+END_SRC
+
+* Coordinate Clamping
+
+## Bounding Box Clamping
+
+Ensure bbox stays within image bounds:
+
+#+BEGIN_SRC python
+def clamp_bbox(bbox, image_width, image_height):
+    """Clamp bounding box to image boundaries."""
+    x1, y1, x2, y2 = bbox
+
+    x1 = max(0, min(x1, image_width - 1))
+    y1 = max(0, min(y1, image_height - 1))
+    x2 = max(0, min(x2, image_width))
+    y2 = max(0, min(y2, image_height))
+
+    # Ensure x2 > x1 and y2 > y1
+    if x2 <= x1:
+        x2 = x1 + 1
+    if y2 <= y1:
+        y2 = y1 + 1
+
+    return [x1, y1, x2, y2]
+#+END_SRC
+
+*Use Cases:*
+- Prevent invalid array indexing
+- Handle detections at image edges
+- Crop operations
+
+* Transformation Matrices
+
+** Affine Transformations
+
+General 2D transformation:
+#+BEGIN_EXAMPLE
+[x']   [a b tx]   [x]
+[y'] = [c d ty] * [y]
+[1 ]   [0 0  1]   [1]
+#+END_EXAMPLE
+
+*Components:*
+- a, b, c, d: Rotation, scaling, shearing
+- tx, ty: Translation
+
+** Common Transformations
+
+*Translation:*
+#+BEGIN_SRC python
+def translate(point, dx, dy):
+    return (point[0] + dx, point[1] + dy)
+#+END_SRC
+
+*Scaling:*
+#+BEGIN_SRC python
+def scale(point, sx, sy):
+    return (point[0] * sx, point[1] * sy)
+#+END_SRC
+
+*Rotation (around origin):*
+#+BEGIN_SRC python
+import math
+
+def rotate(point, angle_rad):
+    x, y = point
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    return (
+        x * cos_a - y * sin_a,
+        x * sin_a + y * cos_a
+    )
+#+END_SRC
+
+* Practical Applications in CV Project
+
+** Object Tracking
+
+DeepSORT requires LTWH format:
+#+BEGIN_SRC python
+# YOLO outputs XYXY
+detections_xyxy = yolo_model.predict(image)
+
+# Convert to LTWH for tracker
+detections_ltwh = [xyxy_to_ltwh(det['bbox']) for det in detections_xyxy]
+
+# Update tracker
+tracks = tracker.update(detections_ltwh)
+#+END_SRC
+
+** Distance Estimation
+
+Calculate object distance from bbox:
+#+BEGIN_SRC python
+from utils.geometry import calculate_box_center
+
+bbox = [100, 200, 300, 500]
+center_x, center_y = calculate_box_center(bbox)
+
+# Sample depth at center
+depth_value = depth_map[int(center_y), int(center_x)]
+
+# Convert to real distance (with calibration)
+distance_meters = depth_value * calibration_scale
+#+END_SRC
+
+** Collision Detection
+
+Check if objects are on collision course:
+#+BEGIN_SRC python
+def will_collide(bbox1, velocity1, bbox2, velocity2, time_horizon=1.0):
+    """Predict if two moving boxes will collide."""
+    # Project future positions
+    center1 = calculate_box_center(bbox1)
+    center2 = calculate_box_center(bbox2)
+
+    future_center1 = (
+        center1[0] + velocity1[0] * time_horizon,
+        center1[1] + velocity1[1] * time_horizon
+    )
+    future_center2 = (
+        center2[0] + velocity2[0] * time_horizon,
+        center2[1] + velocity2[1] * time_horizon
+    )
+
+    # Check distance
+    future_distance = calculate_distance(future_center1, future_center2)
+    return future_distance < collision_threshold
+#+END_SRC
+
+* Implementation Files
+
+- app/utils/geometry.py - Geometric calculations
+- app/utils/camera_calibration.py - Camera intrinsics, 3D projection
+- app/services/object_tracker.py - Coordinate conversions for tracking
+
+* References
+- [[file:../codebase/20251016200700-bbox_coordinate_conversions.org][Bbox Coordinate Conversions]]
+- [[file:../detection/20251022110400-signal_filtering.org][Signal Filtering]]
+- [[file:../depth/20251019110100-pinhole_camera_model.org][Pinhole Camera Model]]
+
+* Footnotes
+
+[fn:1] Homogeneous Coordinates: Representation using one extra dimension [x, y, 1]. Allows affine transformations (rotation, translation, scaling) to be expressed as matrix multiplication.
+
+[fn:2] Right-Handed Coordinate System: When fingers of right hand curl from X to Y, thumb points in direction of Z. Standard in computer graphics and robotics.
+
+[fn:3] Intrinsic Matrix: Camera-specific parameters (focal length, principal point) that transform 3D points to 2D pixels.
